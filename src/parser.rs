@@ -1,6 +1,6 @@
 use std::process::Command;
 
-const CHROME_HEADLESS: String = String::from("chrome");
+const CHROME_HEADLESS: String = String::from("chromium");
 const HEADLESS: String = String::from("--headless");
 const DUMP_TO_DOM: String = String::from("--dump-dom");
 
