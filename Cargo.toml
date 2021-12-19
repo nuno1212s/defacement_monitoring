@@ -2,9 +2,11 @@
 name = "defacement_mon"
 version = "0.1.0"
 edition = "2021"
-
+authors = ["Nuno Neto", "Jaime Silva"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 sha1 = "0.6.0"
-sqlite = "0.24.0"
+r2d2_sqlite = "0.19.0"
+r2d2 = "0.8.9"
+rusqlite = "0.26.3"
