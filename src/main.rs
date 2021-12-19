@@ -1,5 +1,5 @@
 pub mod parser;
-pub mod checksum_comparator;
+pub mod comparators;
 
 pub mod databases {
     mod database;

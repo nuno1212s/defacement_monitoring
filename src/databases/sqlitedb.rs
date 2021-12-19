@@ -2,11 +2,9 @@ extern crate r2d2;
 extern crate r2d2_sqlite;
 extern crate rusqlite;
 
-use std::error::Error;
-use std::fmt::Debug;
-use r2d2::{Pool, PooledConnection, State};
+use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Connection, params};
+use rusqlite::{params};
 
 use crate::databases::database::WebsiteDefacementDB;
 
@@ -16,7 +14,7 @@ const IN_MEMORY: &str = ":memory:";
 const PAGE_STORAGE: &str = "pages_db";
 
 /*
-By using a conenction pool we are able to
+By using a connection pool we are able to use multiple threads effectively
  */
 pub struct SQLLiteDefacementDB {
     sql_conn: Pool<SqliteConnectionManager>,
@@ -210,9 +208,34 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
                 let mut update = write_guard
                     .prepare(format!("INSERT INTO {}(PAGE_ID, DOM) values(?, ?)", TRACKED_PAGES_DOMS).as_str()).unwrap();
 
-                update.execute(params![page_id, page_dom]);
 
-                Ok(0)
+                return match update.execute(params![page_id, page_dom]) {
+                    Ok(count) => {
+                        if count > 0 {
+                            let mut statement = write_guard.prepare("last_inserted_id()").unwrap();
+
+                            return match statement.query([]) {
+                                Ok(mut rows) => {
+                                    match rows.next() {
+                                        Ok(row) => {
+                                            match row {
+                                                Some(row_obj) => Ok(row_obj.get(0).unwrap()),
+                                                None => Err(String::from("Failed to insert"))
+                                            }
+                                        }
+                                        Err(e) => { Err(e.to_string()) }
+                                    }
+                                }
+                                Err(e) => { Err(e.to_string()) }
+                            };
+                        } else {
+                            Err(String::from("Failed to insert into the DB"))
+                        }
+                    }
+                    Err(e) => {
+                        Err(e.to_string())
+                    }
+                };
             }
             Err(E) => {
                 Err(E)
@@ -254,11 +277,6 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
 
 #[cfg(test)]
 mod sqlite_tests {
-
-
-
     #[test]
-    fn test_sqlite() {
-
-    }
+    fn test_sqlite() {}
 }
