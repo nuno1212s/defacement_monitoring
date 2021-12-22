@@ -2,6 +2,8 @@ extern crate r2d2;
 extern crate r2d2_sqlite;
 extern crate rusqlite;
 
+use std::fmt::format;
+use std::ptr::write;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params};
@@ -26,9 +28,13 @@ impl SQLLiteDefacementDB {
 
         let pool = r2d2::Pool::new(manager).unwrap();
 
-        Self {
+        let result = Self {
             sql_conn: pool
-        }
+        };
+
+        result.create_tables();
+
+        result
     }
 
     fn get_sql_conn(&self) -> PooledConnection<SqliteConnectionManager> {
@@ -39,31 +45,56 @@ impl SQLLiteDefacementDB {
         self.get_sql_conn()
     }
 
-    fn read_dom_for_page_id(&self, page_id: u32) -> Result<String, String> {
+    fn create_tables(&self) {
+        let connection = self.get_sql_conn();
+
+        connection.execute(format!("CREATE TABLE IF NOT EXISTS {} (rowid INTEGER PRIMARY KEY, PAGE_URL varchar(2048) NOT NULL)",
+                                   TRACKED_PAGES_TABLE).as_str(), []).unwrap();
+
+        connection.execute(format!("CREATE UNIQUE INDEX IF NOT EXISTS PAGE_URL_IND ON {}(PAGE_URL)",
+                                   TRACKED_PAGES_TABLE).as_str(), params![]).unwrap();
+
+        connection.execute(format!("CREATE TABLE IF NOT EXISTS {} (rowid INTEGER PRIMARY KEY, PAGE_ID INTEGER, DOM TEXT NOT NULL)",
+                                   TRACKED_PAGES_DOMS).as_str(), []).unwrap();
+
+        connection.execute(format!("CREATE INDEX IF NOT EXISTS PAGE_ID_IND ON {}(PAGE_ID)",
+                                   TRACKED_PAGES_DOMS).as_str(), params![]).unwrap();
+    }
+
+    fn read_doms_for_page_id(&self, page_id: u32) -> Result<Vec<String>, String> {
         let read_guard = self.get_sql_conn();
 
         let mut statement = read_guard.prepare(
-            format!("SELECT * FROM {} WHERE PAGE_ID=?", TRACKED_PAGES_DOMS).as_str()).unwrap();
+            format!("SELECT DOM FROM {} WHERE PAGE_ID=?", TRACKED_PAGES_DOMS).as_str()).unwrap();
 
         return {
             match statement.query(params![page_id]) {
                 Ok(mut state) => {
-                    match state.next() {
-                        Ok(pos_row) => {
-                            match pos_row {
-                                Some(row) => {
-                                    Ok(row.get(0).unwrap())
+
+                    let mut doms = Vec::new();
+
+                    loop {
+                        match state.next() {
+                            Ok(row) => {
+
+                                match row {
+                                    Some(row_) => {
+                                        doms.push(row_.get(0).unwrap());
+                                    }
+                                    None => {
+                                        return Ok(doms);
+                                    }
                                 }
-                                None => {
-                                    Err(String::from("Could not find dom for page"))
-                                }
+
+                            }
+                            Err(e) => {
+                                return Err(e.to_string());
                             }
                         }
-                        Err(e) => { Err(e.to_string()) }
                     }
                 }
-                Err(E) => {
-                    Err(E.to_string())
+                Err(e) => {
+                    Err(e.to_string())
                 }
             }
         };
@@ -73,7 +104,7 @@ impl SQLLiteDefacementDB {
         let read_guard = self.get_sql_conn();
 
         let mut statement
-            = read_guard.prepare(format!("SELECT ROWID FROM {} WHERE PAGE=?", TRACKED_PAGES_TABLE).as_str()).unwrap();
+            = read_guard.prepare(format!("SELECT ROWID FROM {} WHERE PAGE_URL=?", TRACKED_PAGES_TABLE).as_str()).unwrap();
 
         return match statement.query(params![page]) {
             Ok(mut rows) => {
@@ -81,18 +112,20 @@ impl SQLLiteDefacementDB {
                     Ok(row) => {
                         match row {
                             Some(row_) => {
-                                Ok(row_.get(0).unwrap())
+                                let x: i64 = row_.get(0).unwrap();
+
+                                Ok(x as u32)
                             }
                             None => Err(String::from("Failed to find page"))
                         }
                     }
-                    Err(E) => {
-                        Err(E.to_string())
+                    Err(e) => {
+                        Err(e.to_string())
                     }
                 }
             }
-            Err(E) => {
-                Err(E.to_string())
+            Err(e) => {
+                Err(e.to_string())
             }
         };
     }
@@ -108,35 +141,16 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         match statement.execute(params![page]) {
             Ok(state) => {
                 if state > 0 {
-                    let mut read_id_stmt = write_guard.prepare("last_insert_id()").unwrap();
+                    let i = write_guard.last_insert_rowid();
 
-                    return match read_id_stmt.query([]) {
-                        Ok(mut rows) => {
-                            match rows.next() {
-                                Ok(row) => {
-                                    match row {
-                                        Some(row_obj) => {
-                                            Ok(row_obj.get(0).unwrap())
-                                        }
-                                        None => {
-                                            Err(String::from("Failed to retrieve error"))
-                                        }
-                                    }
-                                }
-                                Err(E) => { Err(E.to_string()) }
-                            }
-                        }
-                        Err(E) => {
-                            Err(E.to_string())
-                        }
-                    };
+                    Ok(i as u32)
                 } else {
                     Err(String::from("Failed to insert"))
                 }
             }
-            Err(E) => {
+            Err(e) => {
                 // println!("Failed to insert into DB")
-                Err(E.to_string())
+                Err(e.to_string())
             }
         }
     }
@@ -173,18 +187,18 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
                     Ok(false)
                 }
             }
-            Err(E) => {
-                Err(E.to_string())
+            Err(e) => {
+                Err(e.to_string())
             }
         }
     }
 
 
-    fn read_dom_for_page(&self, page: &str) -> Result<String, String> {
+    fn read_doms_for_page(&self, page: &str) -> Result<Vec<String>, String> {
         let read_guard = self.get_sql_conn();
 
         let mut statement = read_guard
-            .prepare(format!("SELECT ROWID FROM {} WHERE page=?", TRACKED_PAGES_TABLE).as_str()).unwrap();
+            .prepare(format!("SELECT rowid FROM {} WHERE PAGE_URL=?", TRACKED_PAGES_TABLE).as_str()).unwrap();
 
         return match statement.query(params![page]) {
             Ok(mut e) => {
@@ -192,10 +206,10 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
 
                 let id: u32 = result.get(0).unwrap();
 
-                self.read_dom_for_page_id(id)
+                self.read_doms_for_page_id(id)
             }
-            Err(E) => {
-                Err(E.to_string())
+            Err(e) => {
+                Err(e.to_string())
             }
         };
     }
@@ -212,22 +226,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
                 return match update.execute(params![page_id, page_dom]) {
                     Ok(count) => {
                         if count > 0 {
-                            let mut statement = write_guard.prepare("last_inserted_id()").unwrap();
-
-                            return match statement.query([]) {
-                                Ok(mut rows) => {
-                                    match rows.next() {
-                                        Ok(row) => {
-                                            match row {
-                                                Some(row_obj) => Ok(row_obj.get(0).unwrap()),
-                                                None => Err(String::from("Failed to insert"))
-                                            }
-                                        }
-                                        Err(e) => { Err(e.to_string()) }
-                                    }
-                                }
-                                Err(e) => { Err(e.to_string()) }
-                            };
+                            Ok(write_guard.last_insert_rowid() as u32)
                         } else {
                             Err(String::from("Failed to insert into the DB"))
                         }
@@ -237,46 +236,104 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
                     }
                 };
             }
-            Err(E) => {
-                Err(E)
+            Err(e) => {
+                Err(e)
             }
         }
     }
 
-    fn update_dom_for_page(&self, page: &str, dom_id: u32, page_dom: &str) -> Result<(), String> {
+    fn update_dom_for_page(&self, _page: &str, dom_id: u32, page_dom: &str) -> Result<(), String> {
         let guard = self.get_sql_conn();
 
         let mut update = guard
-            .prepare(format!("UPDATE {} SET DOM=? WHERE ROWID=?", TRACKED_PAGES_DOMS).as_str())
+            .prepare(format!("UPDATE {} SET DOM=? WHERE rowid=?", TRACKED_PAGES_DOMS).as_str())
             .unwrap();
 
         match update.execute(params![page_dom, dom_id]) {
             Ok(_) => {
                 Ok(())
             }
-            Err(E) => {
-                Err(E.to_string())
+            Err(e) => {
+                Err(e.to_string())
             }
         }
     }
 
-    fn delete_dom_for_page(&self, page: &str, dom_id: u32) -> Result<bool, String> {
+    fn delete_dom_for_page(&self, _page: &str, dom_id: u32) -> Result<bool, String> {
         let read_guard = self.get_sql_conn();
 
         let mut execute = read_guard.prepare(
-            format!("DELETE FROM {} WHERE ROWID=?", TRACKED_PAGES_DOMS).as_str()).unwrap();
+            format!("DELETE FROM {} WHERE rowid=?", TRACKED_PAGES_DOMS).as_str()).unwrap();
 
         match execute.execute(params![dom_id]) {
             Ok(size) => {
                 if size > 0 { Ok(true) } else { Ok(false) }
             }
-            Err(E) => { Err(E.to_string()) }
+            Err(e) => { Err(e.to_string()) }
         }
     }
 }
 
 #[cfg(test)]
 mod sqlite_tests {
+    use crate::databases::database::WebsiteDefacementDB;
+    use crate::databases::sqlitedb::SQLLiteDefacementDB;
+
     #[test]
-    fn test_sqlite() {}
+    fn test_sqlite_tracked_page() {
+        let db = SQLLiteDefacementDB::new();
+
+        let page = "https://google.com";
+
+        let result = db.insert_tracked_page(page);
+
+        assert!(result.is_ok());
+
+        let result2 = db.insert_tracked_page(page);
+
+        assert!(result2.is_err());
+
+        let page_id = result.unwrap();
+
+        assert_eq!(db.read_page_id_for_page(page).unwrap(), page_id);
+
+        let x = db.del_tracked_page(page).unwrap();
+
+        assert_eq!(x, true);
+
+        assert!(db.read_page_id_for_page(page).is_err())
+    }
+
+    #[test]
+    fn test_sqlite_store_dom() {
+        let db = SQLLiteDefacementDB::new();
+
+        let page = "https://google.com";
+
+        let dom = "<>";
+
+        let result = db.insert_tracked_page(page);
+
+        assert!(result.is_ok());
+
+        let result_insert_dom = db.insert_dom_for_page(page, dom);
+
+        assert!(result_insert_dom.is_ok());
+
+        let doms = db.read_doms_for_page(page);
+
+        assert!(doms.is_ok());
+
+        assert_eq!(doms.unwrap(), vec![dom]);
+
+        let delete_result = db.delete_dom_for_page(page, result_insert_dom.unwrap());
+
+        assert!(delete_result.is_ok());
+
+        let doms_2 = db.read_doms_for_page(page);
+
+        assert!(doms_2.is_ok() && doms_2.unwrap().is_empty());
+
+        assert!(db.del_tracked_page(page).is_ok());
+    }
 }

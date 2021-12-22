@@ -5,8 +5,14 @@ edition = "2021"
 authors = ["Nuno Neto", "Jaime Silva"]
 
 [dependencies]
+#Used to perform checksum checks
 sha1 = "0.6.0"
+#SQLLite dependencies
 r2d2_sqlite = "0.19.0"
 r2d2 = "0.8.9"
 rusqlite = "0.26.3"
+#Used to check the % of difference between pages.
 difference = "2.0.0"
+#Used for sending emails
+lettre = "0.9.6"
+lettre_email = "0.9.4"

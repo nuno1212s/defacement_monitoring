@@ -6,6 +6,12 @@ pub mod databases {
     mod sqlitedb;
 }
 
+pub mod page_management {
+    mod page_management;
+}
+
+pub mod communication;
+
 fn main() {
     println!("Hello, world!");
 
