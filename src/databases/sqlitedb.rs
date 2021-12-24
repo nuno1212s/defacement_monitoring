@@ -8,9 +8,9 @@ use std::ptr::write;
 use std::slice::SliceIndex;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params};
+use rusqlite::{Error, params};
+use crate::communication::CommData::Email;
 use crate::databases::*;
-
 
 const TRACKED_PAGES_TABLE: &str = "TRACKED_PAGES";
 const TRACKED_PAGES_DOMS: &str = "PAGES";
@@ -27,7 +27,7 @@ pub struct SQLLiteDefacementDB {
 }
 
 impl SQLLiteDefacementDB {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let manager = SqliteConnectionManager::file(PAGE_STORAGE);
 
         let pool = r2d2::Pool::new(manager).unwrap();
@@ -70,7 +70,7 @@ impl SQLLiteDefacementDB {
         connection.execute(format!("CREATE UNIQUE INDEX IF NOT EXISTS USERNAME_ID ON {}(USERNAME)",
                                    USERS).as_str(), params![]).unwrap();
 
-        connection.execute(format!("CREATE TABLE IF NOT EXISTS {} (rowid INTEGER PRIMARY KEY, USER_ID INTEGER NOT NULL, CONTACT TEXT NOT NULL)",
+        connection.execute(format!("CREATE TABLE IF NOT EXISTS {} (rowid INTEGER PRIMARY KEY, USER_ID INTEGER NOT NULL, CONTACT_TYPE varchar(50) NOT NULL, CONTACT TEXT NOT NULL)",
                                    USER_CONTACTS).as_str(), params![]).unwrap();
 
         connection.execute(format!("CREATE UNIQUE INDEX IF NOT EXISTS USER_IND ON {}(USER_ID)",
@@ -325,7 +325,7 @@ impl UserDB for SQLLiteDefacementDB {
         return match statement.query(params![user_name]) {
             Ok(mut rows) => {
                 if let Some(row) = rows.next().unwrap() {
-                    Ok(User::new(row.get(0).unwrap(), row.get(1).unwrap()))
+                    return Ok(User::new(row.get(0).unwrap(), row.get(1).unwrap()));
                 }
 
                 Err(String::from("Could not find user."))
@@ -337,12 +337,12 @@ impl UserDB for SQLLiteDefacementDB {
         };
     }
 
-    fn delete_user(&self, user_id: u32) -> Result<bool, String> {
+    fn delete_user(&self, user: User) -> Result<bool, String> {
         let connection = self.get_sql_conn();
 
         let mut statement = connection.prepare(format!("DELETE FROM {} WHERE rowid=?", USERS).as_str()).unwrap();
 
-        return match statement.execute(params![user_id]) {
+        return match statement.execute(params![user.user_id()]) {
             Ok(count) => {
                 if count > 0 {
                     Ok(true)
@@ -354,13 +354,20 @@ impl UserDB for SQLLiteDefacementDB {
         };
     }
 
-    fn register_contact(&self, user: &User, comm: CommData) -> Result<UserCommunication, String> {
+    fn insert_contact_for(&self, user: &User, comm: CommData) -> Result<UserCommunication, String> {
         let connection = self.get_sql_conn();
 
-        let mut statement = connection.execute(format!("INSERT INTO {} (USER_ID, CONTACT) values(?, ?)", USER_CONTACTS).as_str(),
-                                               params![user.user_id(), ]);
+        let mut statement = connection.prepare(format!("INSERT INTO {} (USER_ID, CONTACT_TYPE, CONTACT) values(?, ?, ?)", USER_CONTACTS).as_str()).unwrap();
 
-        match statement {
+        let mut final_result: Option<Result<usize, Error>> = Option::None;
+
+        match &comm {
+            CommData::Email(mail) => {
+                final_result = Some(statement.execute(params![user.user_id(), "EMAIL", mail]));
+            }
+        }
+
+        match final_result.unwrap() {
             Ok(changed_rows) => {
                 if changed_rows > 0 {
                     let id = connection.last_insert_rowid();
@@ -386,8 +393,22 @@ impl UserDB for SQLLiteDefacementDB {
         match statement.query(params![user.user_id()]) {
             Ok(mut rows) => {
                 while let Some(row) = rows.next().unwrap() {
-                    contacts.push(UserCommunication::new(row.get(0).unwrap(),
-                                                         row.get(1).unwrap(), row.get(2).unwrap()));
+                    let commType: String = row.get(2).unwrap();
+
+                    let mut comm: Option<CommData> = Option::None;
+
+                    if commType.eq("EMAIL") {
+                        comm = Some(Email(row.get(3).unwrap()))
+                    }
+
+                    match comm {
+                        Some(comm_) => {
+                            contacts.push(UserCommunication::new(row.get(0).unwrap(),
+                                                                 row.get(1).unwrap(),
+                                                                 comm_));
+                        }
+                        None => {}
+                    }
                 }
             }
             Err(e) => {
@@ -417,7 +438,8 @@ impl UserDB for SQLLiteDefacementDB {
 
 #[cfg(test)]
 mod sqlite_tests {
-    use crate::databases::WebsiteDefacementDB;
+    use crate::communication::CommData::Email;
+    use crate::databases::{UserDB, WebsiteDefacementDB};
     use crate::databases::sqlitedb::SQLLiteDefacementDB;
 
     #[test]
@@ -480,5 +502,48 @@ mod sqlite_tests {
         assert!(doms_2.is_ok() && doms_2.unwrap().is_empty());
 
         assert!(db.del_tracked_page(tracked_page).is_ok());
+    }
+
+    #[test]
+    fn test_user_db() {
+        let db = SQLLiteDefacementDB::new();
+
+        let username = "teste";
+
+        let result_created_user = db.create_user(username);
+
+        assert!(result_created_user.is_ok());
+
+        let created_user = result_created_user.unwrap();
+
+        let result_user_info = db.get_user_info_for(username);
+
+        assert!(result_user_info.is_ok());
+
+        let user_info = result_user_info.unwrap();
+
+        assert_eq!(created_user, user_info);
+
+        let contact = db.insert_contact_for(&user_info, Email(String::from("nunonuninho2@gmail.com"))).unwrap();
+
+        let result_contact_list = db.list_contacts_for(&user_info);
+
+        assert!(result_contact_list.is_ok());
+
+        let contact_list = result_contact_list.unwrap();
+
+        assert_eq!(vec![contact.clone()], contact_list);
+
+        let result_delete_contact = db.delete_contact(contact);
+
+        assert!(result_delete_contact.is_ok());
+
+        let result_delete_user = db.delete_user(user_info);
+
+        assert!(result_delete_user.is_ok() && result_delete_user.unwrap());
+
+        let result_user_info_after_delete = db.get_user_info_for(username);
+
+        assert!(result_user_info_after_delete.is_err());
     }
 }

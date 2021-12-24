@@ -14,5 +14,7 @@ rusqlite = "0.26.3"
 #Used to check the % of difference between pages.
 difference = "2.0.0"
 #Used for sending emails
-lettre = "0.9.6"
+lettre = "0.10.0-rc.4"
 lettre_email = "0.9.4"
+#TOML for configuration files
+toml = "0.5.8"

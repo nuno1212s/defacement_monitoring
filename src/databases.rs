@@ -1,6 +1,6 @@
 use crate::communication::{CommData, UserCommunication};
 
-mod sqlitedb;
+pub mod sqlitedb;
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TrackedPage {
@@ -49,7 +49,7 @@ pub trait UserDB {
 
     fn delete_user(&self, user: User) -> Result<bool, String>;
 
-    fn register_contact(&self, user: &User, comm: CommData) -> Result<UserCommunication, String>;
+    fn insert_contact_for(&self, user: &User, comm: CommData) -> Result<UserCommunication, String>;
 
     fn list_contacts_for(&self, user: &User) -> Result<Vec<UserCommunication>, String>;
 

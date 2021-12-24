@@ -1,24 +1,26 @@
 use crate::communication::email::EmailCommunicator;
-use crate::databases::User;
+use crate::databases::{TrackedPage, User};
 
 pub mod email;
 
 pub trait CommunicationMethod {
-    fn send_report_to(&self, user: &UserCommunication, reason: &str);
+    fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_pape: &TrackedPage) -> Result<String, String>;
 }
 
+#[derive(PartialEq, Debug, Clone)]
 pub struct UserCommunication {
     comm_id: u32,
     user_id: u32,
     communication: CommData,
 }
 
+#[derive(PartialEq, Debug, Clone)]
 pub enum CommData {
     Email(String)
 }
 
 impl UserCommunication {
-    pub fn new(comm_id: u32, user_id: u32, communication: UserCommData) -> Self {
+    pub fn new(comm_id: u32, user_id: u32, communication: CommData) -> Self {
         Self { comm_id, user_id, communication }
     }
 
