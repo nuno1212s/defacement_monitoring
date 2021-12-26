@@ -4,12 +4,10 @@ extern crate rusqlite;
 
 use std::fmt::format;
 use std::fs::read;
-use std::os::linux::raw::stat;
 use std::ptr::write;
 use std::string::ToString;
 use std::slice::SliceIndex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use difference::diff;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Error, params, Row, Rows};
@@ -230,7 +228,6 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         let current_time = SystemTime::now().duration_since(UNIX_EPOCH)
             .unwrap().as_millis();
 
-        ///
         /// This is basically a poor man's lock on SQLite without actually locking anything
         /// By performing this update, we are basically saying that we will take responsibility of checking these pages
         /// Because the time set is correspondent to our time and the odds of another thread attempting to
