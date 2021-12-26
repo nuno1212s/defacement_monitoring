@@ -16,5 +16,10 @@ difference = "2.0.0"
 #Used for sending emails
 lettre = "0.10.0-rc.4"
 lettre_email = "0.9.4"
+
+#Async runtime so we can parallelize the verification of webpages,
+#Thusly improving the performance signficantly
+tokio={version = "1.15.0", features = ["full"]}
+
 #TOML for configuration files
 toml = "0.5.8"

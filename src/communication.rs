@@ -4,7 +4,8 @@ use crate::databases::{TrackedPage, User};
 pub mod email;
 
 pub trait CommunicationMethod {
-    fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_pape: &TrackedPage) -> Result<String, String>;
+    fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_pape: &TrackedPage)
+        -> Result<String, String>;
 }
 
 #[derive(PartialEq, Debug, Clone)]

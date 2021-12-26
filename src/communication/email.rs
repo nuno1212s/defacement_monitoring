@@ -24,15 +24,15 @@ impl EmailCommunicator {
     pub fn new(config_file: &str) -> Self {
         let value = config_file.parse::<Value>().unwrap();
 
-        let emailSMTP = EmailSMTPData::new(String::from(value["smtp_server"].as_str().unwrap()),
-        String::from(value["username"].as_str().unwrap()),
-        String::from(value["password"].as_str().unwrap()),
-        value["port"].as_integer());
+        let email_smtp = EmailSMTPData::new(String::from(value["smtp_server"].as_str().unwrap()),
+                                            String::from(value["username"].as_str().unwrap()),
+                                            String::from(value["password"].as_str().unwrap()),
+                                            value["port"].as_integer());
 
-        let credentials = Credentials::new(String::from(emailSMTP.username()),
-                                           String::from(emailSMTP.password()));
+        let credentials = Credentials::new(String::from(email_smtp.username()),
+                                           String::from(email_smtp.password()));
 
-        let mailer = SmtpTransport::relay(emailSMTP.smtp_server())
+        let mailer = SmtpTransport::relay(email_smtp.smtp_server())
             .unwrap()
             .credentials(credentials)
             .build();
@@ -106,7 +106,6 @@ mod email_tests {
 
     #[test]
     fn test_send_mail() {
-
         let config_file = include_str!("../../resources/email.toml");
 
         let communicator = EmailCommunicator::new(config_file);
@@ -115,7 +114,7 @@ mod email_tests {
             "Nuno Neto <nunonuninho2@gmail.com>",
             "Nuno Neto <nuno.neto.g@gmail.com>",
             "Test subject",
-            "Test body"
+            "Test body",
         ).unwrap();
     }
 }

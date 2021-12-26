@@ -7,6 +7,17 @@ pub struct TrackedPage {
     page_id: u32,
     page_url: String,
     owning_user_id: u32,
+    last_time_checked: u128,
+    tracked_page_type: TrackedPageType,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum TrackedPageType {
+    Static,
+    /*
+    Stores the threshold at which we start to notify that the page has been defaced
+     */
+    Dynamic(f32),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -19,7 +30,7 @@ pub struct StoredDom {
 #[derive(PartialEq, Debug, Clone)]
 pub struct User {
     user_id: u32,
-    user: String
+    user: String,
 }
 
 pub trait WebsiteDefacementDB {
@@ -27,9 +38,13 @@ pub trait WebsiteDefacementDB {
 
     fn list_all_tracked_pages(&self) -> Result<Vec<TrackedPage>, String>;
 
+    fn list_all_pages_not_checked_for(&self, time_since_last_check: u128) -> Result<Vec<TrackedPage>, String>;
+
     fn get_information_for_page(&self, page: &str) -> Result<TrackedPage, String>;
 
     fn get_information_for_tracked_page(&self, page_id: u32) -> Result<TrackedPage, String>;
+
+    fn update_tracking_type_for_page(&self, page: &TrackedPage) -> Result<bool, String>;
 
     fn del_tracked_page(&self, page: TrackedPage) -> Result<bool, String>;
 
@@ -57,11 +72,14 @@ pub trait UserDB {
 }
 
 impl TrackedPage {
-    pub fn new(page_id: u32, page_url: String, owning_user_id: u32) -> Self {
+    pub fn new(page_id: u32, page_url: String, owning_user_id: u32, last_time_checked: u128,
+               tracked_type: TrackedPageType) -> Self {
         Self {
             page_id,
-            page_url: page_url,
+            page_url,
             owning_user_id,
+            last_time_checked,
+            tracked_page_type: tracked_type,
         }
     }
 
@@ -74,7 +92,18 @@ impl TrackedPage {
     pub fn owning_user_id(&self) -> u32 {
         self.owning_user_id
     }
+    pub fn last_time_checked(&self) -> u128 {
+        self.last_time_checked
+    }
+    pub fn tracked_page_type(&self) -> &TrackedPageType {
+        &self.tracked_page_type
+    }
+
+    pub fn set_tracked_page_type(&mut self, tracked_page_type: TrackedPageType) {
+        self.tracked_page_type = tracked_page_type;
+    }
 }
+
 
 impl StoredDom {
     pub fn new(dom_id: u32, owning_page_id: u32, dom: String) -> Self {
@@ -97,7 +126,6 @@ impl StoredDom {
 }
 
 impl User {
-
     pub fn user_id(&self) -> u32 {
         self.user_id
     }
@@ -108,4 +136,17 @@ impl User {
     pub fn new(user_id: u32, user: String) -> Self {
         Self { user_id, user }
     }
+}
+
+pub fn tracked_page_type_to_str(page_type: &TrackedPageType) -> &str {
+
+    match page_type {
+        TrackedPageType::Static => {
+            "Static"
+        }
+        TrackedPageType::Dynamic(_) => {
+            "Dynamic"
+        }
+    }
+
 }
