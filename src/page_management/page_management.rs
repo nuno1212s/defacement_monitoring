@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::time;
+use crate::comparators::{Comparator, CompareResult};
 
 use crate::databases::{StoredDom, TrackedPage, TrackedPageType, User, UserDB, WebsiteDefacementDB};
 use crate::databases::TrackedPageType::Dynamic;
@@ -23,18 +24,21 @@ pub struct PageManager<T, V, K> where
     tracked_page_db: T,
     user_db: V,
     parser: K,
+    comparators: Vec<Box<dyn Comparator>>
 }
 
 impl<T, V, K> PageManager<T, V, K>
     where T: WebsiteDefacementDB + Send + Sync + 'static,
           V: UserDB + Send + Sync + 'static,
           K: Parser + Send + Sync + 'static {
-    pub fn new(tracked_page_db: T, user_db: V, parser: K) -> Self {
+    pub fn new(tracked_page_db: T, user_db: V, parser: K, comparators: Vec<Box<dyn Comparator>>) -> Self {
+
         Self {
             currently_analysing_pages: Mutex::new(Vec::new()),
             tracked_page_db,
             user_db,
             parser,
+            comparators
         }
     }
 
@@ -306,7 +310,9 @@ impl<T, V, K> PageManager<T, V, K>
                             }
                         }
 
-                        self.verify_page(&page_clone, latest_dom, current_dom)
+                        if !self_res.verify_page(&page_clone, latest_dom, current_dom) {
+                            //TODO: Send notification to the owner
+                        }
                     });
 
                     lock_guard.push(page);
@@ -322,10 +328,28 @@ impl<T, V, K> PageManager<T, V, K>
         self.parser().parse_page(page)
     }
 
+    ///Verifies if the page is as it's suposed to be.
+    ///Returns true if the page is good (not defaced)
+    ///Returns false if the page is not good (defaced)
     fn verify_page(&self, page: &TrackedPage, stored_dom: &StoredDom, current_dom: String) -> bool {
-        match page.tracked_page_type() {
-            TrackedPageType::Static => {}
-            TrackedPageType::Dynamic(diff_threshold) => {}
+        for comparator in &self.comparators {
+            let result = comparator.compare_between(page, stored_dom.dom(),
+                                                    current_dom.as_str());
+
+            match result {
+                CompareResult::NotDefaced => {
+                    return true;
+                }
+                CompareResult::MaybeDefaced => {
+                    println!("Inconclusive result for page {} with ID {},\
+                     could not determine if page was defaced or not with comparator {}", page.page_url(), page.page_id(),
+                    comparator.name())
+                }
+                CompareResult::Defaced => {
+                    return false;
+                }
+            }
+
         }
 
         true
