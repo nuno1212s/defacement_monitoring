@@ -1,5 +1,3 @@
-use crate::comparators::checksum_comparator::ChecksumComparator;
-use crate::comparators::diff_comparator::DiffComparator;
 use crate::databases::TrackedPage;
 
 pub mod checksum_comparator;

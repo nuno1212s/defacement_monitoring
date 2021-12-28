@@ -1,44 +1,52 @@
 use std::io::{BufRead, StdinLock};
+use std::num::ParseIntError;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use log::{debug, error};
 
 use tokio::time;
-use crate::comparators::{Comparator, CompareResult};
 
+use crate::communication::{CommData, CommunicationMethod, UserCommunication};
+use crate::comparators::{Comparator, CompareResult};
+use crate::comparators::diff_comparator::{analyse_dynamic_page, compare_dom_with_diff};
 use crate::databases::{StoredDom, TrackedPage, TrackedPageType, User, UserDB, WebsiteDefacementDB};
 use crate::databases::TrackedPageType::Dynamic;
+use crate::DiffComparator;
 use crate::parsers::Parser;
 
 /*
 60 minutes between checks
  */
-const TIME_BETWEEN_CHECKS: u128 = 60 * 60 * 1000;
+const TIME_BETWEEN_CHECKS: u128 = 1 * 1 * 1000;
 ///60 seconds between attempting checks
-const TIME_INTERVAL: Duration = Duration::from_millis(60 * 1000);
+const TIME_INTERVAL: Duration = Duration::from_millis(1 * 1000);
 
 pub struct PageManager<T, V, K> where
-    T: WebsiteDefacementDB + Send + Sync,
-    V: UserDB + Send + Sync,
-    K: Parser + Send + Sync {
+    T: WebsiteDefacementDB,
+    V: UserDB,
+    K: Parser {
     currently_analysing_pages: Mutex<Vec<TrackedPage>>,
     tracked_page_db: T,
     user_db: V,
     parser: K,
-    comparators: Vec<Box<dyn Comparator>>
+    comparators: Vec<Box<dyn Comparator>>,
+    communications: Vec<Box<dyn CommunicationMethod>>,
 }
 
 impl<T, V, K> PageManager<T, V, K>
-    where T: WebsiteDefacementDB + Send + Sync + 'static,
-          V: UserDB + Send + Sync + 'static,
-          K: Parser + Send + Sync + 'static {
-    pub fn new(tracked_page_db: T, user_db: V, parser: K, comparators: Vec<Box<dyn Comparator>>) -> Self {
-
+    where T: WebsiteDefacementDB + 'static,
+          V: UserDB + 'static,
+          K: Parser + 'static {
+    pub fn new(tracked_page_db: T, user_db: V, parser: K,
+               comparators: Vec<Box<dyn Comparator>>,
+               communications: Vec<Box<dyn CommunicationMethod>>) -> Self {
         Self {
             currently_analysing_pages: Mutex::new(Vec::new()),
             tracked_page_db,
             user_db,
             parser,
-            comparators
+            comparators,
+            communications,
         }
     }
 
@@ -58,7 +66,7 @@ impl<T, V, K> PageManager<T, V, K>
         self.show_menu();
     }
 
-    fn show_menu(&self) {
+    fn show_menu(self: &Arc<Self>) {
         loop {
             println!("=============================================");
             println!("1- List all currently tracked pages.");
@@ -67,9 +75,9 @@ impl<T, V, K> PageManager<T, V, K>
             println!("4- Edit tracked page.");
             println!("5- Force rescan of tracked page. \
             (This is useful for when you make changes to the page and want to update the stored dom.)");
-            println!("5- Get user ID for username.");
-            println!("6- Register new user.");
-            println!("7- Delete user.");
+            println!("6- Get user ID for username.");
+            println!("7- Register new user.");
+            println!("8- Delete user.");
             println!("=============================================");
 
             let stdin1 = std::io::stdin();
@@ -100,25 +108,38 @@ impl<T, V, K> PageManager<T, V, K>
                         Ok(mut tracked_page) => {
                             println!("You have successfully inserted the page. The page ID is {}", tracked_page.page_id());
 
-                            self.alter_tracked_page(&mut stdin, &mut tracked_page);
-
-                            match tracked_page.tracked_page_type() {
-                                Dynamic(_) => {
-                                    todo!("Analyse the page and get a good idea of the diff threshold")
-                                }
-                                _ => {}
-                            }
+                            self.alter_tracked_page(&mut stdin, tracked_page);
                         }
                         Err(e) => {
                             println!("Failed to insert the page because {}", e);
                         }
                     }
                 }
-                3 => {}
+                3 => {
+                    self.remove_tracked_page(&mut stdin);
+                }
+                4 => {
+                    match self.read_page_from_stdin(&mut stdin) {
+                        Ok(mut page) => {
+                            self.alter_tracked_page(&mut stdin, page);
+                        }
+                        Err(e) => {
+                            println!("{}", e);
+                        }
+                    }
+                }
                 5 => {
-                    self.display_user_id(&mut stdin)
+                    match self.read_page_from_stdin(&mut stdin) {
+                        Ok(mut page) => {
+                            self.clone().analyse_page(page);
+                        }
+                        Err(e) => { println!("{}", e); }
+                    }
                 }
                 6 => {
+                    self.display_user_id(&mut stdin);
+                }
+                7 => {
                     match self.insert_new_user(&mut stdin) {
                         Ok(user) => {
                             println!("The user with the username {} has been created succesfully and has the id {}",
@@ -160,7 +181,33 @@ impl<T, V, K> PageManager<T, V, K>
         };
     }
 
-    fn alter_tracked_page(&self, stdin: &mut StdinLock, tracked_page: &mut TrackedPage) {
+    fn read_page_from_stdin(&self, stdin: &mut StdinLock) -> Result<TrackedPage, String> {
+        println!("Please enter the page ID.");
+
+        let mut line = String::new();
+
+        match stdin.read_line(&mut line) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(format!("Failed to read page ID. {:?}", e));
+            }
+        }
+
+        line.pop();
+
+        let parsed_number_result = line.parse::<u32>();
+
+        return match parsed_number_result {
+            Ok(page_id) => {
+                Ok(self.tracked_page_db().get_information_for_tracked_page(page_id)?)
+            }
+            Err(e) => {
+                Err(format!("Failed to read page ID {:?}", e))
+            }
+        };
+    }
+
+    fn alter_tracked_page(self: &Arc<Self>, stdin: &mut StdinLock, mut tracked_page: TrackedPage) {
         println!("The page is:");
         println!("1- Static");
         println!("2- Dynamic");
@@ -177,16 +224,21 @@ impl<T, V, K> PageManager<T, V, K>
             Ok(choice) => {
                 match choice {
                     1 => {
-                        tracked_page.set_tracked_page_type(TrackedPageType::Static)
+                        tracked_page.set_tracked_page_type(TrackedPageType::Static);
                     }
                     2 => {
-                        tracked_page.set_tracked_page_type(TrackedPageType::Dynamic(-1.0))
+                        tracked_page.set_tracked_page_type(TrackedPageType::Dynamic(-1.0));
                     }
                     _ => {}
                 }
             }
-            Err(e) => { println!("Failed to read your choice. {:?}", e) }
+            Err(e) => {
+                println!("Failed to read your choice. {:?}, {}", e, line);
+                return;
+            }
         }
+
+        tokio::spawn(self.clone().analyse_page(tracked_page));
     }
 
     fn display_all_tracked_pages(&self) {
@@ -194,7 +246,7 @@ impl<T, V, K> PageManager<T, V, K>
 
         match pages_res {
             Ok(pages) => {
-                for page in pages {
+                for page in &pages {
                     println!("Page with ID {} tracking url {}", page.page_id(), page.page_url());
 
                     match page.tracked_page_type() {
@@ -206,6 +258,10 @@ impl<T, V, K> PageManager<T, V, K>
                         }
                     }
                 }
+
+                if pages.is_empty() {
+                    println!("There are no tracked pages!");
+                }
             }
             Err(e) => {
                 println!("Failed to read pages because {}", e);
@@ -213,12 +269,229 @@ impl<T, V, K> PageManager<T, V, K>
         }
     }
 
+    fn remove_tracked_page(&self, stdin: &mut StdinLock) {
+        println!("Insert the ID of the page you want to stop tracking.");
+
+        let mut line: String = String::new();
+
+        match stdin.read_line(&mut line) {
+            Ok(_) => { line.pop(); }
+            Err(e) => {
+                println!("Failed to read input! {:?}", e);
+
+                return;
+            }
+        }
+
+        let page_id_res = line.parse::<u32>();
+
+        match page_id_res {
+            Ok(page_id) => {
+                match self.tracked_page_db().get_information_for_tracked_page(page_id) {
+                    Ok(page) => {
+                        self.tracked_page_db().del_tracked_page(page);
+                    }
+                    Err(e) => {
+                        println!("There is no page with that ID {}! {}", page_id, e);
+
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("Failed to parse page ID {:?}", e);
+
+                return;
+            }
+        }
+    }
+
+    ///Check which pages need haven't been checked in a while and checks them
+    fn check_pages(self: &Arc<Self>) {
+        let result = self.tracked_page_db()
+            .list_all_pages_not_checked_for(TIME_BETWEEN_CHECKS);
+
+        match result {
+            Ok(mut pages_not_checked) => {
+                let mut lock_guard = self.currently_analysing_pages.lock().unwrap();
+
+                for page in pages_not_checked {
+                    let page_clone = page.clone();
+
+                    let self_res = self.clone();
+
+                    lock_guard.push(page);
+
+                    tokio::spawn(self_res.check_singular_page(page_clone));
+                }
+            }
+            Err(e) => {
+                error!("Failed to check pages because of error: {}", e)
+            }
+        }
+    }
+
+    ///Analyse a given page and check if it has been defaced
+    ///Runs all the comparison algorithms provided in PageManager initialization
+    async fn check_singular_page(self: Arc<Self>, page: TrackedPage) {
+        let result_doms = self.tracked_page_db()
+            .read_doms_for_page(&page);
+
+        let doms = result_doms.unwrap();
+
+        if doms.is_empty()
+        {
+            debug!("Tried to check page {} with ID {} but there are no stored doms, please take a look at this.",
+                     page.page_url(), page.page_id());
+
+            return;
+        }
+
+        //Allow the scheduler to take over a different task
+        //while we are reading the dom from the parser, which might take a while
+        //As it has to fetch the result
+        let dom_result = self.read_current_page_for(&page).await;
+
+        let current_dom = dom_result.expect("Failed to read current dom.");
+
+        let mut latest_dom = &doms[0];
+
+        for dom in &doms {
+            if dom.dom_id() > latest_dom.dom_id() {
+                latest_dom = dom;
+            }
+        }
+
+        if !self.verify_page(&page, latest_dom, current_dom) {
+            let owning_user = self.user_db()
+                .get_user_info_for_id(page.owning_user_id());
+
+            match owning_user {
+                Ok(user) => {
+                    let contacts_res = self.user_db().list_contacts_for(&user);
+
+                    match contacts_res {
+                        Ok(contacts) => {
+                            for contact in &contacts {
+                                for comm_method in &self.communications {
+                                    match (*comm_method).send_report_to(&user, contact, &page) {
+                                        Ok(_) => {
+                                            debug!("Sent notification to user {} with ID {} about defacement on page {} with id {}",
+                                                     user.user(), user.user_id(), page.page_url(),
+                                                     page.page_id());
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to contact user {} with ID {}\
+                                                             on communication method {:?} for \
+                                                             tracked page defacement {} with page ID {}. {}",
+                                                     user.user(), user.user_id(), contact, page.page_url(),
+                                                     page.page_id(), e);
+                                        }
+                                    };
+
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to load contacts for user {}, {}", page.owning_user_id(), e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("DETECTED DEFACEMENT IN PAGE {} BUT COULD NOT FIND \
+                                    USER INFO FOR OWNER {}, {}", page.page_url(),
+                             page.owning_user_id(), e);
+                }
+            }
+        }
+    }
+
+    ///Verifies if the page is as it's supposed to be.
+    ///Returns true if the page is good (not defaced)
+    ///Returns false if the page is not good (defaced)
+    fn verify_page(&self, page: &TrackedPage, stored_dom: &StoredDom, current_dom: String) -> bool {
+        for comparator in &self.comparators {
+            let result = comparator.compare_between(page, stored_dom.dom(),
+                                                    current_dom.as_str());
+
+            match result {
+                CompareResult::NotDefaced => {
+                    debug!("Not defaced, page {}, comparator {}", page.page_url(),
+                    comparator.name());
+                    return true;
+                }
+                CompareResult::MaybeDefaced => {
+                    debug!("Inconclusive result for page {} with ID {},\
+                     could not determine if page was defaced or not with comparator {}", page.page_url(), page.page_id(),
+                             comparator.name())
+                }
+                CompareResult::Defaced => {
+                    debug!("Defaced, page {}, comparator {}", page.page_url(), comparator.name());
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    ///Fetch the latest version doms, insert it into the DB
+    ///When the page is registered as a dynamic page, also performs
+    ///An analysis for 5 minutes, taking samples every 30 seconds and does an average of the diff between
+    ///them so we can calculate a threshold that will trigger a defacement alarm
+    async fn analyse_page(self: Arc<Self>, mut page: TrackedPage) {
+        debug!("Analysing page {} with ID {}", page.page_url(), page.page_id());
+
+        match page.tracked_page_type() {
+            TrackedPageType::Static => {
+                let dom_res = self.read_current_page_for(&page).await;
+
+                match dom_res {
+                    Ok(dom) => {
+                        self.tracked_page_db().insert_dom_for_page(&page, dom.as_str()).unwrap();
+                        debug!("Inserted DOM for page {} with ID {}", page.page_url(), page.page_id());
+                    }
+                    Err(e) => {
+                        error!("FAILED TO ANALYSE PAGE {}, PLEASE FIX WHAT IS WRONG. {}", page.page_url(), e);
+                    }
+                }
+            }
+            Dynamic(_) => {
+                let result = analyse_dynamic_page(self.parser(), &page).await;
+
+                page.set_tracked_page_type(Dynamic(result.unwrap()));
+
+                let dom_res = self.read_current_page_for(&page).await;
+
+                match dom_res {
+                    Ok(dom) => {
+                        self.tracked_page_db().insert_dom_for_page(&page, dom.as_str()).unwrap();
+                        debug!("Inserted DOM for page {} with ID {}", page.page_url(), page.page_id());
+                    }
+                    Err(e) => {
+                        error!("FAILED TO ANALYSE PAGE {}, PLEASE FIX WHAT IS WRONG. {}", page.page_url(), e);
+                    }
+                }
+            }
+        }
+
+        self.tracked_page_db().update_tracking_type_for_page(&page).unwrap();
+    }
+
+    async fn read_current_page_for(&self, page: &TrackedPage) -> Result<String, String> {
+        self.parser().parse_page(page)
+    }
+
     fn insert_new_user(&self, stdin: &mut StdinLock) -> Result<User, String> {
         println!("Insert the username of the user");
 
         let mut username = String::new();
 
-        stdin.read_line(&mut username);
+        match stdin.read_line(&mut username) {
+            Ok(_) => {}
+            Err(e) => { return Err(e.to_string()); }
+        };
 
         username.pop();
 
@@ -226,9 +499,17 @@ impl<T, V, K> PageManager<T, V, K>
     }
 
     fn display_user_id(&self, stdin: &mut StdinLock) {
+        println!("Please insert the username.");
+
         let mut username = String::new();
 
-        stdin.read_line(&mut username);
+        match stdin.read_line(&mut username) {
+            Ok(_) => {}
+            Err(e) => {
+                println!("Failed to read username because {:?}.", e);
+                return;
+            }
+        };
 
         username.pop();
 
@@ -268,91 +549,6 @@ impl<T, V, K> PageManager<T, V, K>
             }
             Err(e) => { println!("Could not find a user by that name? {}", e); }
         }
-    }
-
-    ///Check which pages need haven't been checked in a while and checks them
-    fn check_pages(self: &Arc<Self>) {
-        let result = self.tracked_page_db()
-            .list_all_pages_not_checked_for(TIME_BETWEEN_CHECKS);
-
-        match result {
-            Ok(mut pages_not_checked) => {
-                let mut lock_guard = self.currently_analysing_pages.lock().unwrap();
-
-                for page in pages_not_checked {
-                    let page_clone = page.clone();
-
-                    let self_res = self.clone();
-
-                    tokio::spawn(async move {
-                        let result_doms = self_res.tracked_page_db()
-                            .read_doms_for_page(&page_clone);
-
-                        let doms = result_doms.unwrap();
-
-                        if doms.is_empty()
-                        {
-                            println!("Tried to check page {} with ID {} but there are no stored doms, please take a look at this.",
-                                     page_clone.page_url(), page_clone.page_id());
-
-                            return;
-                        }
-
-                        let dom_result = self_res.read_current_page_for(&page_clone);
-
-                        let current_dom = dom_result.expect("Failed to read current dom.");
-
-                        let mut latest_dom = &doms[0];
-
-                        for dom in &doms {
-                            if dom.dom_id() > latest_dom.dom_id() {
-                                latest_dom = dom;
-                            }
-                        }
-
-                        if !self_res.verify_page(&page_clone, latest_dom, current_dom) {
-                            //TODO: Send notification to the owner
-                        }
-                    });
-
-                    lock_guard.push(page);
-                }
-            }
-            Err(e) => {
-                println!("Failed to check pages because of error: {}", e)
-            }
-        }
-    }
-
-    fn read_current_page_for(&self, page: &TrackedPage) -> Result<String, String> {
-        self.parser().parse_page(page)
-    }
-
-    ///Verifies if the page is as it's suposed to be.
-    ///Returns true if the page is good (not defaced)
-    ///Returns false if the page is not good (defaced)
-    fn verify_page(&self, page: &TrackedPage, stored_dom: &StoredDom, current_dom: String) -> bool {
-        for comparator in &self.comparators {
-            let result = comparator.compare_between(page, stored_dom.dom(),
-                                                    current_dom.as_str());
-
-            match result {
-                CompareResult::NotDefaced => {
-                    return true;
-                }
-                CompareResult::MaybeDefaced => {
-                    println!("Inconclusive result for page {} with ID {},\
-                     could not determine if page was defaced or not with comparator {}", page.page_url(), page.page_id(),
-                    comparator.name())
-                }
-                CompareResult::Defaced => {
-                    return false;
-                }
-            }
-
-        }
-
-        true
     }
 
     pub fn tracked_page_db(&self) -> &T {

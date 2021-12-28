@@ -1,9 +1,5 @@
-use std::fmt::format;
-
 use lettre::{Message, SmtpTransport, Transport};
 use lettre::transport::smtp::authentication::Credentials;
-use lettre::transport::smtp::Error;
-use lettre::transport::smtp::response::Response;
 use toml::Value;
 
 use crate::communication::{CommData, CommunicationMethod, UserCommunication};
@@ -83,16 +79,21 @@ impl EmailSMTPData {
 }
 
 impl CommunicationMethod for EmailCommunicator {
-    fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_pape: &TrackedPage) -> Result<String, String> {
+    fn matches(&self, comm: &CommData) -> bool {
+        return match comm { CommData::Email(_) => { true } }
+    }
+
+    fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_page: &TrackedPage) -> Result<String, String> {
         return match comm_method.communication() {
             CommData::Email(email) => {
                 return self.send_mail_to("Nuno Neto <nunonuninho2@gmail.com>",
                                          format!("{} <{}>", user.user(), email).as_str(),
-                                         format!("Defacement detected in tracked page {}", tracked_pape.page_id()).as_str(),
+                                         format!("Defacement detected in tracked page {} with ID {}",
+                                                 tracked_page.page_url(), tracked_page.page_id()).as_str(),
                                          "",
                 );
             }
-            (_) => {
+            _ => {
                 Err(String::from("There is no email registered to that communication method."))
             }
         };

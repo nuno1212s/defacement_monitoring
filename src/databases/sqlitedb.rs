@@ -2,15 +2,13 @@ extern crate r2d2;
 extern crate r2d2_sqlite;
 extern crate rusqlite;
 
-use std::fmt::format;
-use std::fs::read;
-use std::ptr::write;
 use std::string::ToString;
-use std::slice::SliceIndex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Error, params, Row, Rows};
+
 use crate::communication::CommData::Email;
 use crate::databases::*;
 
@@ -57,7 +55,7 @@ impl SQLLiteDefacementDB {
 
         connection.execute(format!("CREATE TABLE IF NOT EXISTS {} (rowid INTEGER PRIMARY KEY, \
         PAGE_URL varchar(2048) NOT NULL, USER_ID INTEGER NOT NULL, LAST_TIME_CHECKED INTEGER,\
-        PAGE_TYPE varchar(25) NOT NULL, PAGE_TRACKING_DATA TEXT)",
+        LAST_TIME_INDEXED INTEGER, PAGE_TYPE varchar(25) NOT NULL, PAGE_TRACKING_DATA TEXT)",
                                    TRACKED_PAGES_TABLE).as_str(), []).unwrap();
 
         connection.execute(format!("CREATE UNIQUE INDEX IF NOT EXISTS PAGE_URL_IND ON {}(PAGE_URL)",
@@ -140,24 +138,25 @@ impl SQLLiteDefacementDB {
     }
 
     fn parse_tracked_page_from_row(&self, row: &Row) -> Result<TrackedPage, Error> {
-        let page_id: u32 = row.get(1)?;
-        let page_url: String = row.get(2)?;
-        let owning_user_id: u32 = row.get(3)?;
-        let last_time_checked: u64 = row.get(4)?;
+        let page_id: u32 = row.get(0)?;
+        let page_url: String = row.get(1)?;
+        let owning_user_id: u32 = row.get(2)?;
+        let last_time_checked: u64 = row.get(3)?;
+        let last_time_indexed: u64 = row.get(4)?;
 
         let mut tracked_page_type = TrackedPageType::Static;
 
         let tracked_type: String = row.get(5)?;
 
         if tracked_type.eq_ignore_ascii_case("Dynamic") {
-            let diff_str : String = row.get(6)?;
+            let diff_str: String = row.get(6)?;
 
-            let diff: f32 = diff_str.parse::<f32>().unwrap();
+            let diff: f64 = diff_str.parse::<f64>().unwrap();
 
             tracked_page_type = TrackedPageType::Dynamic(diff);
         }
 
-        Ok(TrackedPage::new(page_id, page_url, owning_user_id, last_time_checked as u128, tracked_page_type))
+        Ok(TrackedPage::new(page_id, page_url, owning_user_id, last_time_checked as u128, last_time_indexed as u128, tracked_page_type))
     }
 
     fn crawl_all_pages_in_result_set(&self, rows: &mut Rows) -> Result<Vec<TrackedPage>, Error> {
@@ -178,6 +177,39 @@ impl SQLLiteDefacementDB {
 
         Ok(return_vec)
     }
+
+    fn list_all_pages_not_actioned_for(&self, time_since_last_check : u128, check_col: &str) -> Result<Vec<TrackedPage>, String>{
+        let read_guard = self.get_sql_conn();
+
+        let current_time = SystemTime::now().duration_since(UNIX_EPOCH)
+            .unwrap().as_millis();
+
+        /// This is basically a poor man's lock on SQLite without actually locking anything
+        /// By performing this update, we are basically saying that we will take responsibility of checking these pages
+        /// Because the time set is correspondent to our time and the odds of another thread attempting to
+        /// do this at the EXACT same time as us is basically 0, so we get a form of locking
+        /// to assure each page only gets verified once every time_since_last_check to improve performance
+        let mut update_query = read_guard.prepare(format!("UPDATE {} SET {}=? WHERE {}<?", TRACKED_PAGES_TABLE,
+        check_col, check_col).as_str()).unwrap();
+
+        match update_query.execute(params![current_time as u64, (current_time - time_since_last_check) as u64]) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(e.to_string());
+            }
+        };
+
+        let mut result = read_guard.prepare(
+            format!("SELECT * FROM {} WHERE {}=?", TRACKED_PAGES_TABLE, check_col).as_str()
+        ).unwrap();
+
+        let mut rows = result.query(params![current_time as u64]).unwrap();
+
+        return match self.crawl_all_pages_in_result_set(&mut rows) {
+            Ok(results) => { Ok(results) }
+            Err(e) => { Err(e.to_string()) }
+        };
+    }
 }
 
 impl WebsiteDefacementDB for SQLLiteDefacementDB {
@@ -185,17 +217,18 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         let write_guard = self.write_sql_conn();
 
         let mut statement = write_guard.prepare(
-            format!("INSERT INTO {}(PAGE_URL, USER_ID, LAST_TIME_CHECKED, PAGE_TYPE) values(?, ?, ?, ?)", TRACKED_PAGES_TABLE).as_str()).unwrap();
+            format!("INSERT INTO {}(PAGE_URL, USER_ID, LAST_TIME_CHECKED, LAST_TIME_INDEXED, PAGE_TYPE) values(?, ?, ?, ?, ?)", TRACKED_PAGES_TABLE).as_str()).unwrap();
 
         let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
-        match statement.execute(params![page, user_id, current_time as u64, "Static"]) {
+        match statement.execute(params![page, user_id, current_time as u64,
+            0, "Static"]) {
             Ok(state) => {
                 if state > 0 {
                     let i = write_guard.last_insert_rowid();
 
                     Ok(TrackedPage::new(i as u32, String::from(page), user_id,
-                                        current_time, TrackedPageType::Static))
+                                        current_time, 0, TrackedPageType::Static))
                 } else {
                     Err(String::from("Failed to insert"))
                 }
@@ -223,35 +256,11 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
     }
 
     fn list_all_pages_not_checked_for(&self, time_since_last_check: u128) -> Result<Vec<TrackedPage>, String> {
-        let read_guard = self.get_sql_conn();
+        self.list_all_pages_not_actioned_for(time_since_last_check, "LAST_TIME_CHECKED")
+    }
 
-        let current_time = SystemTime::now().duration_since(UNIX_EPOCH)
-            .unwrap().as_millis();
-
-        /// This is basically a poor man's lock on SQLite without actually locking anything
-        /// By performing this update, we are basically saying that we will take responsibility of checking these pages
-        /// Because the time set is correspondent to our time and the odds of another thread attempting to
-        /// do this at the EXACT same time as us is basically 0, so we get a form of locking
-        /// to assure each page only gets verified once every time_since_last_check to improve performance
-        let mut update_query = read_guard.prepare(format!("UPDATE {} SET LAST_TIME_CHECKED=? WHERE LAST_TIME_CHECKED<?", TRACKED_PAGES_TABLE).as_str()).unwrap();
-
-        match update_query.execute(params![current_time as u64, (current_time - time_since_last_check) as u64]) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(e.to_string());
-            }
-        };
-
-        let mut result = read_guard.prepare(
-            format!("SELECT * FROM {} WHERE LAST_TIME_CHECKED=?", TRACKED_PAGES_TABLE).as_str()
-        ).unwrap();
-
-        let mut rows = result.query(params![current_time as u64]).unwrap();
-
-        return match self.crawl_all_pages_in_result_set(&mut rows) {
-            Ok(results) => { Ok(results) }
-            Err(e) => { Err(e.to_string()) }
-        };
+    fn list_all_pages_not_indexed_for(&self, time_since_last_index: u128) -> Result<Vec<TrackedPage>, String> {
+        self.list_all_pages_not_actioned_for(time_since_last_index, "LAST_TIME_INDEXED")
     }
 
     fn get_information_for_page(&self, page: &str) -> Result<TrackedPage, String> {
@@ -302,7 +311,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         let connection = self.get_sql_conn();
 
         let mut statement = connection.prepare(format!("UPDATE {} SET PAGE_TYPE=?,\
-         PAGE_TRACKING_DATA=? WHERE rowid=?", TRACKED_PAGES_TABLE).as_str()).unwrap();
+         PAGE_TRACKING_DATA=?,LAST_TIME_INDEXED=? WHERE rowid=?", TRACKED_PAGES_TABLE).as_str()).unwrap();
 
         let mut page_type_data = String::from("NULL");
 
@@ -313,8 +322,10 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
             }
         }
 
+        let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+
         return match statement.execute(params![tracked_page_type_to_str(page.tracked_page_type()),
-        page_type_data, page.page_id()]) {
+        page_type_data, page.page_id(), current_time as u64]) {
             Ok(changed) => {
                 if changed > 0 {
                     Ok(true)
@@ -353,6 +364,30 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         self.read_doms_for_page_id(page.page_id())
     }
 
+    fn read_latest_dom_for_page(&self, page: &TrackedPage) -> Result<StoredDom, String> {
+        let conn = self.get_sql_conn();
+
+        let mut statement = conn.prepare(format!("SELECT * FROM {} WHERE PAGE_ID=? ORDER BY rowid DESC LIMIT 1", TRACKED_PAGES_DOMS).as_str()).unwrap();
+
+        return match statement.query(params![page.page_id()]) {
+            Ok(mut rows) => {
+                match rows.next() {
+                    Ok(row) => {
+                        if let Some(row_i) = row {
+                            Ok(StoredDom::new(row_i.get(0).unwrap(),
+                                              row_i.get(1).unwrap(),
+                                              row_i.get(2).unwrap()))
+                        } else {
+                            Err(String::from("Could not find dom for page"))
+                        }
+                    }
+                    Err(e) => { Err(e.to_string()) }
+                }
+            }
+            Err(e) => { Err(e.to_string()) }
+        };
+    }
+
     fn insert_dom_for_page(&self, page: &TrackedPage, page_dom: &str) -> Result<StoredDom, String> {
         let write_guard = self.write_sql_conn();
 
@@ -374,7 +409,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         };
     }
 
-    fn update_dom_for_page(&self, page: &TrackedPage, dom: &mut StoredDom, page_dom: &str) -> Result<(), String> {
+    fn update_dom_for_page(&self, _page: &TrackedPage, dom: &mut StoredDom, page_dom: &str) -> Result<(), String> {
         let guard = self.get_sql_conn();
 
         let mut update = guard
@@ -445,6 +480,26 @@ impl UserDB for SQLLiteDefacementDB {
                 Err(String::from("Could not find user."))
             }
 
+            Err(e) => {
+                Err(e.to_string())
+            }
+        };
+    }
+
+    fn get_user_info_for_id(&self, user_id: u32) -> Result<User, String> {
+        let connection = self.get_sql_conn();
+
+        let mut statement = connection.prepare(format!("SELECT * FROM {} WHERE rowid=?", USERS)
+            .as_str()).unwrap();
+
+        return match statement.query(params![user_id]) {
+            Ok(mut rows) => {
+                if let Some(row) = rows.next().unwrap() {
+                    return Ok(User::new(row.get(0).unwrap(), row.get(1).unwrap()));
+                }
+
+                Err(String::from("Could not find user."))
+            }
             Err(e) => {
                 Err(e.to_string())
             }

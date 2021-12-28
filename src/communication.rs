@@ -1,11 +1,12 @@
-use crate::communication::email::EmailCommunicator;
+use std::fmt::Debug;
 use crate::databases::{TrackedPage, User};
 
 pub mod email;
 
-pub trait CommunicationMethod {
+pub trait CommunicationMethod: Send + Sync {
+    fn matches(&self, comm: &CommData) -> bool;
     fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_pape: &TrackedPage)
-        -> Result<String, String>;
+                      -> Result<String, String>;
 }
 
 #[derive(PartialEq, Debug, Clone)]
