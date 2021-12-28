@@ -3,7 +3,7 @@ use lettre::transport::smtp::authentication::Credentials;
 use toml::Value;
 
 use crate::communication::{CommData, CommunicationMethod, UserCommunication};
-use crate::databases::{TrackedPage, User};
+use crate::databases::{StoredDom, TrackedPage, User};
 
 pub struct EmailSMTPData {
     smtp_server: String,
@@ -80,17 +80,19 @@ impl EmailSMTPData {
 
 impl CommunicationMethod for EmailCommunicator {
     fn matches(&self, comm: &CommData) -> bool {
-        return match comm { CommData::Email(_) => { true } }
+        return match comm { CommData::Email(_) => { true } };
     }
 
-    fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_page: &TrackedPage) -> Result<String, String> {
+    fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_page: &TrackedPage,
+                      stored_dom: &StoredDom, latest_dom: &str) -> Result<String, String> {
         return match comm_method.communication() {
             CommData::Email(email) => {
                 return self.send_mail_to("Nuno Neto <nunonuninho2@gmail.com>",
                                          format!("{} <{}>", user.user(), email).as_str(),
                                          format!("Defacement detected in tracked page {} with ID {}",
                                                  tracked_page.page_url(), tracked_page.page_id()).as_str(),
-                                         "",
+                                         format!("The previous body was: \n{}\n The current body is: \n{}\n",
+                                                 stored_dom.dom(), latest_dom).as_str(),
                 );
             }
             _ => {

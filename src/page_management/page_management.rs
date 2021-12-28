@@ -2,7 +2,7 @@ use std::io::{BufRead, StdinLock};
 use std::num::ParseIntError;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use log::{debug, error};
+use log::{debug, error, trace, warn};
 
 use tokio::time;
 
@@ -75,9 +75,11 @@ impl<T, V, K> PageManager<T, V, K>
             println!("4- Edit tracked page.");
             println!("5- Force rescan of tracked page. \
             (This is useful for when you make changes to the page and want to update the stored dom.)");
-            println!("6- Get user ID for username.");
+            println!("6- Get user info for username.");
             println!("7- Register new user.");
             println!("8- Delete user.");
+            println!("9- Register contact for user.");
+            println!("10- Delete contact for user.");
             println!("=============================================");
 
             let stdin1 = std::io::stdin();
@@ -106,7 +108,8 @@ impl<T, V, K> PageManager<T, V, K>
                 2 => {
                     match self.insert_tracked_page(&mut stdin) {
                         Ok(mut tracked_page) => {
-                            println!("You have successfully inserted the page. The page ID is {}", tracked_page.page_id());
+                            println!("You have successfully inserted the page.\
+                             The page ID is {}", tracked_page.page_id());
 
                             self.alter_tracked_page(&mut stdin, tracked_page);
                         }
@@ -146,6 +149,19 @@ impl<T, V, K> PageManager<T, V, K>
                                      user.user(), user.user_id())
                         }
                         Err(e) => { println!("Failed to create user because {}", e) }
+                    }
+                }
+                8 => {
+                    self.delete_user(&mut stdin);
+                }
+                9 => {
+                    match self.read_user_info(&mut stdin) {
+                        Ok(user) => {
+                            self.insert_contact_for(&mut stdin, &user);
+                        }
+                        Err(error) => {
+                            println!("{}", error)
+                        }
                     }
                 }
                 _ => { println!("Could not find that option!") }
@@ -333,7 +349,7 @@ impl<T, V, K> PageManager<T, V, K>
 
     ///Analyse a given page and check if it has been defaced
     ///Runs all the comparison algorithms provided in PageManager initialization
-    async fn check_singular_page(self: Arc<Self>, page: TrackedPage) {
+    async fn check_singular_page(self: Arc<Self>, mut page: TrackedPage) {
         let result_doms = self.tracked_page_db()
             .read_doms_for_page(&page);
 
@@ -362,7 +378,26 @@ impl<T, V, K> PageManager<T, V, K>
             }
         }
 
-        if !self.verify_page(&page, latest_dom, current_dom) {
+        if !self.verify_page(&page, latest_dom, &current_dom) {
+            let mut notify = false;
+
+            if page.defacement_count() + 1 >= page.defacement_threshold() && !page.notified_of_current_breach() {
+                notify = true;
+            }
+
+            match self.tracked_page_db().increment_defacement_count(&mut page, notify) {
+                Ok(_) => {}
+                Err(error) => {
+                    error!("Failed to increment defacement count of {} because {}", page.page_id(), error);
+                }
+            }
+
+            debug!("Page now has {} defacements out of {} possible ones", page.defacement_count(), page.defacement_threshold());
+
+            if !notify {
+                return;
+            }
+
             let owning_user = self.user_db()
                 .get_user_info_for_id(page.owning_user_id());
 
@@ -372,9 +407,18 @@ impl<T, V, K> PageManager<T, V, K>
 
                     match contacts_res {
                         Ok(contacts) => {
+                            if contacts.is_empty() {
+                                warn!("Found defacement in tracked page {} with id {} \
+                                but owner {} with id {} has not registered contacts.",
+                                page.page_url(), page.page_id(), user.user(), user.user_id());
+
+                                return;
+                            }
+
                             for contact in &contacts {
                                 for comm_method in &self.communications {
-                                    match (*comm_method).send_report_to(&user, contact, &page) {
+                                    match (*comm_method).send_report_to(&user, contact, &page,
+                                                                        latest_dom, current_dom.as_str()) {
                                         Ok(_) => {
                                             debug!("Sent notification to user {} with ID {} about defacement on page {} with id {}",
                                                      user.user(), user.user_id(), page.page_url(),
@@ -404,30 +448,37 @@ impl<T, V, K> PageManager<T, V, K>
                              page.owning_user_id(), e);
                 }
             }
+        } else {
+            match self.tracked_page_db().reset_defacement_count(&mut page) {
+                Ok(_) => {}
+                Err(error) => {
+                    error!("Failed to reset defacement count {}", error);
+                }
+            }
         }
     }
 
     ///Verifies if the page is as it's supposed to be.
     ///Returns true if the page is good (not defaced)
     ///Returns false if the page is not good (defaced)
-    fn verify_page(&self, page: &TrackedPage, stored_dom: &StoredDom, current_dom: String) -> bool {
+    fn verify_page(&self, page: &TrackedPage, stored_dom: &StoredDom, current_dom: &String) -> bool {
         for comparator in &self.comparators {
             let result = comparator.compare_between(page, stored_dom.dom(),
                                                     current_dom.as_str());
 
             match result {
                 CompareResult::NotDefaced => {
-                    debug!("Not defaced, page {}, comparator {}", page.page_url(),
+                    trace!("Not defaced, page {}, comparator {}", page.page_url(),
                     comparator.name());
                     return true;
                 }
                 CompareResult::MaybeDefaced => {
-                    debug!("Inconclusive result for page {} with ID {},\
+                    trace!("Inconclusive result for page {} with ID {},\
                      could not determine if page was defaced or not with comparator {}", page.page_url(), page.page_id(),
                              comparator.name())
                 }
                 CompareResult::Defaced => {
-                    debug!("Defaced, page {}, comparator {}", page.page_url(), comparator.name());
+                    trace!("Defaced, page {}, comparator {}", page.page_url(), comparator.name());
                     return false;
                 }
             }
@@ -513,17 +564,39 @@ impl<T, V, K> PageManager<T, V, K>
 
         username.pop();
 
-        let user_result = self.user_db.get_user_info_for(username.as_str());
+        let user_result = self.user_db().get_user_info_for(username.as_str());
 
         match user_result {
             Ok(user) => {
-                println!("That username corresponds to the user ID {}", user.user_id());
+                println!("That username corresponds to the user ID {}.", user.user_id());
+
+                let contacts_result = self.user_db().list_contacts_for(&user);
+
+                match contacts_result {
+                    Ok(contacts) => {
+                        if contacts.is_empty() {
+                            println!("This user has no contacts associated.");
+                            return;
+                        }
+
+                        for contact in &contacts {
+                            println!("{} - {} - {}", contact.comm_id(),
+                                     match contact.communication() { CommData::Email(_) => { "Email" } },
+                                     match contact.communication() { CommData::Email(lettre_email) => { lettre_email } })
+                        }
+                    }
+                    Err(error) => {
+                        println!("Failed to get contacts for user {}. {}", user.user(), error);
+                    }
+                }
             }
             Err(e) => { println!("Could not find a user by that name? {}", e); }
         }
     }
 
     fn delete_user(&self, stdin: &mut StdinLock) {
+        println!("Insert the username.");
+
         let mut username = String::new();
 
         stdin.read_line(&mut username);
@@ -548,6 +621,100 @@ impl<T, V, K> PageManager<T, V, K>
                 };
             }
             Err(e) => { println!("Could not find a user by that name? {}", e); }
+        }
+    }
+
+    fn read_user_info(&self, stdin: &mut StdinLock) -> Result<User, String> {
+        println!("Please insert the user ID.");
+
+        let mut line = String::new();
+
+        match stdin.read_line(&mut line) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(format!("Failed to read username because {:?}.", e));
+            }
+        };
+
+        line.pop();
+
+        let parsed_id = line.parse::<u32>();
+
+        return match parsed_id {
+            Ok(page_id) => {
+                self.user_db().get_user_info_for_id(page_id)
+            }
+            Err(err) => {
+                Err(format!("Failed to read user id {:?}.", err))
+            }
+        };
+    }
+
+    fn insert_contact_for(&self, stdin: &mut StdinLock, user: &User) {
+        println!("Insert contact email.");
+
+        let mut line = String::new();
+
+        match stdin.read_line(&mut line) {
+            Ok(_) => {}
+            Err(e) => {
+                println!("Failed to read email because {:?}.", e);
+            }
+        };
+
+        line.pop();
+
+        match self.user_db().insert_contact_for(user, CommData::Email(line.clone())) {
+            Ok(res) => {
+                println!("Inserted contact {} with ID {}", line, res.comm_id());
+            }
+            Err(error) => {
+                println!("Failed to insert contact because {}", error);
+            }
+        }
+    }
+
+    fn delete_contact_for(&self, stdin: &mut StdinLock, user: &User) {
+        println!("Insert contact id.");
+
+        let mut line = String::new();
+
+        match stdin.read_line(&mut line) {
+            Ok(_) => {}
+            Err(e) => {
+                println!("Failed to read email because {:?}.", e);
+            }
+        };
+
+        line.pop();
+
+        let comm_id_res = line.parse::<u32>();
+
+        match comm_id_res {
+            Ok(comm_id) => {
+                match self.user_db().get_contact_for_id(comm_id) {
+                    Ok(contact) => {
+                        match self.user_db().delete_contact(contact) {
+                            Ok(res) => {
+                                if res {
+                                    println!("Deleted contact successfully");
+                                } else {
+                                    println!("Failed to delete contact");
+                                }
+                            }
+                            Err(error) => {
+                                println!("Failed to delete contact because {}", error);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        println!("There is no contact with that ID {}", err);
+                    }
+                }
+            }
+            Err(error) => {
+                println!("Failed to read comm ID. {}", error);
+            }
         }
     }
 

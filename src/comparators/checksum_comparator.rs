@@ -46,6 +46,7 @@ impl Comparator for ChecksumComparator {
             }
             TrackedPageType::Dynamic(_) => {
                 if comp_doms(dom_1, dom_2) {
+                    //If the docs are equal then it can't have been defaced.
                     NotDefaced
                 } else {
                     MaybeDefaced

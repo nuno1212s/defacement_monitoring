@@ -1,6 +1,6 @@
 use std::time::Duration;
 use difference::Changeset;
-use log::{debug, error, warn};
+use log::{debug, error, trace, warn};
 use tokio::time;
 use crate::comparators::{Comparator, CompareResult};
 use crate::comparators::CompareResult::{Defaced, MaybeDefaced, NotDefaced};
@@ -51,6 +51,8 @@ pub async fn analyse_dynamic_page<T>(parser: &T, page: &TrackedPage) -> Result<f
     }
 
     diff_threshold_avg /= comparisons as f64;
+    //Give some leeway to the defacement calculator as to not register too many false positives
+    diff_threshold_avg *= 1.3;
 
     warn!("After calculating the difference between 10 samples of the website,\
          the difference threshold for the page {} with ID {} is {}",
@@ -70,6 +72,7 @@ pub fn compare_dom_with_diff(dom: &str, dom_2: &str) -> f64 {
     let distance: f64 = changes.distance as f64;
 
     let distance_percent: f64 = (distance * 100.0) / (dom_size as f64);
+
 
     distance_percent
 }
@@ -97,7 +100,11 @@ impl Comparator for DiffComparator {
                 }
             }
             TrackedPageType::Dynamic(threshold) => {
-                if compare_dom_with_diff(dom_1, dom_2) > *threshold {
+                let diff = compare_dom_with_diff(dom_1, dom_2);
+
+                trace!("Distance calculated is {}, needs to be below {}", diff, *threshold);
+
+                if diff > *threshold {
                     Defaced
                 } else {
                     MaybeDefaced

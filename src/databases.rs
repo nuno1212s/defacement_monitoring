@@ -2,6 +2,8 @@ use crate::communication::{CommData, UserCommunication};
 
 pub mod sqlitedb;
 
+const DEFAULT_DEFACEMENT_THRESHOLD : u32 = 5;
+
 #[derive(PartialEq, Debug, Clone)]
 pub struct TrackedPage {
     page_id: u32,
@@ -10,6 +12,9 @@ pub struct TrackedPage {
     last_time_checked: u128,
     last_time_indexed: u128,
     tracked_page_type: TrackedPageType,
+    defacement_count: u32,
+    defacement_threshold: u32,
+    notified_of_current_breach: bool,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -49,6 +54,14 @@ pub trait WebsiteDefacementDB: Send + Sync {
 
     fn update_tracking_type_for_page(&self, page: &TrackedPage) -> Result<bool, String>;
 
+    ///Should also set the value of the object we were passed as the correct
+    /// Value that is stored in the database
+    ///notified is whether the system notified the user (If he had already been notified, this will be false)
+    fn increment_defacement_count(&self, page: &mut TrackedPage, notified: bool) -> Result<(), String>;
+
+    ///Should also reset the value of the object we were passed
+    fn reset_defacement_count(&self, page: &mut TrackedPage) -> Result<(), String>;
+
     fn del_tracked_page(&self, page: TrackedPage) -> Result<bool, String>;
 
     fn read_doms_for_page(&self, page: &TrackedPage) -> Result<Vec<StoredDom>, String>;
@@ -75,12 +88,15 @@ pub trait UserDB: Send + Sync {
 
     fn list_contacts_for(&self, user: &User) -> Result<Vec<UserCommunication>, String>;
 
+    fn get_contact_for_id(&self, contact_id: u32) -> Result<UserCommunication, String>;
+
     fn delete_contact(&self, comm: UserCommunication) -> Result<bool, String>;
 }
 
 impl TrackedPage {
     pub fn new(page_id: u32, page_url: String, owning_user_id: u32, last_time_checked: u128,
-               last_time_indexed: u128,
+               last_time_indexed: u128, defacement_count: u32, defacement_threshold: u32,
+               notified_of_current: bool,
                tracked_type: TrackedPageType) -> Self {
         Self {
             page_id,
@@ -88,6 +104,9 @@ impl TrackedPage {
             owning_user_id,
             last_time_checked,
             last_time_indexed,
+            defacement_count,
+            defacement_threshold,
+            notified_of_current_breach: notified_of_current,
             tracked_page_type: tracked_type,
         }
     }
@@ -113,8 +132,24 @@ impl TrackedPage {
     pub fn last_time_indexed(&self) -> u128 {
         self.last_time_indexed
     }
-}
+    pub fn defacement_count(&self) -> u32 {
+        self.defacement_count
+    }
 
+    pub fn defacement_threshold(&self) -> u32 {
+        self.defacement_threshold
+    }
+    pub fn notified_of_current_breach(&self) -> bool {
+        self.notified_of_current_breach
+    }
+    pub fn set_defacement_count(&mut self, defacement_count: u32) {
+        self.defacement_count = defacement_count;
+    }
+
+    pub fn set_notified_of_current_breach(&mut self, notified_of_current_breach: bool) {
+        self.notified_of_current_breach = notified_of_current_breach;
+    }
+}
 
 impl StoredDom {
     pub fn new(dom_id: u32, owning_page_id: u32, dom: String) -> Self {
