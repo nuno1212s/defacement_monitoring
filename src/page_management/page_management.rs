@@ -67,6 +67,10 @@ impl<T, V, K> PageManager<T, V, K>
     }
 
     fn show_menu(self: &Arc<Self>) {
+        let stdin1 = std::io::stdin();
+
+        let mut stdin = stdin1.lock();
+
         loop {
             println!("=============================================");
             println!("1- List all currently tracked pages.");
@@ -81,10 +85,6 @@ impl<T, V, K> PageManager<T, V, K>
             println!("9- Register contact for user.");
             println!("10- Delete contact for user.");
             println!("=============================================");
-
-            let stdin1 = std::io::stdin();
-
-            let mut stdin = stdin1.lock();
 
             let mut line = String::new();
 
@@ -134,9 +134,9 @@ impl<T, V, K> PageManager<T, V, K>
                 5 => {
                     match self.read_page_from_stdin(&mut stdin) {
                         Ok(mut page) => {
-                            self.clone().analyse_page(page);
+                            tokio::spawn(self.clone().analyse_page(page));
                         }
-                        Err(e) => { println!("{}", e); }
+                        Err(e) => { println!("FAILED {}", e); }
                     }
                 }
                 6 => {

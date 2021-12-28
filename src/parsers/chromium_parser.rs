@@ -56,7 +56,7 @@ mod parser_tests {
 
     #[test]
     fn test_parser() {
-        let string = read_website_to_dom("https://sqlite.org/c3ref/last_insert_rowid.html");
+        let string = read_website_to_dom("https://jekil.sexy/blog/2009/website-defacement-detection-techniques.html");
 
         println!("{}", string.unwrap());
     }
