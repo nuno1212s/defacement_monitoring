@@ -2,3 +2,5 @@ smtp_server = "smtp.gmail.com"
 username = "nunonuninho2"
 password = "pyyrsowgbomnwetg"
 port = 465
+from_name = "WebDefacement Monitor"
+from_email = "nunonuninho2@gmail.com"

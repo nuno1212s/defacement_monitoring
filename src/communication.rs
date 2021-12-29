@@ -1,12 +1,13 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use crate::databases::{StoredDom, TrackedPage, User};
 
 pub mod email;
 
-pub trait CommunicationMethod: Send + Sync {
+pub trait CommunicationMethod<T>: Send + Sync
+    where T: Display {
     fn matches(&self, comm: &CommData) -> bool;
     fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_pape: &TrackedPage,
-    stored_dom: &StoredDom, latest_dom: &str)
+                      stored_dom: &StoredDom<T>, latest_dom: &T)
                       -> Result<String, String>;
 }
 

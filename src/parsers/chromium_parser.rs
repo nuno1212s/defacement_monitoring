@@ -43,7 +43,7 @@ impl ChromiumParser {
     }
 }
 
-impl Parser for ChromiumParser {
+impl Parser<String> for ChromiumParser {
     fn parse_page(&self, page: &TrackedPage) -> Result<String, String> {
         read_website_to_dom(page.page_url())
     }

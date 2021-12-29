@@ -30,12 +30,12 @@ impl ChecksumComparator {
     }
 }
 
-impl Comparator for ChecksumComparator {
+impl Comparator<String> for ChecksumComparator {
     fn name(&self) -> &str {
         "Checksum"
     }
 
-    fn compare_between(&self, page: &TrackedPage, dom_1: &str, dom_2: &str) -> CompareResult {
+    fn compare_between(&self, page: &TrackedPage, dom_1: &String, dom_2: &String) -> CompareResult {
         return match page.tracked_page_type() {
             TrackedPageType::Static => {
                 if comp_doms(dom_1, dom_2) {

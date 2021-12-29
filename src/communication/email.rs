@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Display};
 use lettre::{Message, SmtpTransport, Transport};
 use lettre::transport::smtp::authentication::Credentials;
 use toml::Value;
@@ -10,10 +11,13 @@ pub struct EmailSMTPData {
     username: String,
     password: String,
     port: Option<i64>,
+    from_name: String,
+    from_email: String,
 }
 
 pub struct EmailCommunicator {
     mailer: SmtpTransport,
+    smtp_data: EmailSMTPData,
 }
 
 impl EmailCommunicator {
@@ -23,7 +27,9 @@ impl EmailCommunicator {
         let email_smtp = EmailSMTPData::new(String::from(value["smtp_server"].as_str().unwrap()),
                                             String::from(value["username"].as_str().unwrap()),
                                             String::from(value["password"].as_str().unwrap()),
-                                            value["port"].as_integer());
+                                            value["port"].as_integer(),
+                                            String::from(value["from_name"].as_str().unwrap()),
+                                            String::from(value["from_email"].as_str().unwrap()));
 
         let credentials = Credentials::new(String::from(email_smtp.username()),
                                            String::from(email_smtp.password()));
@@ -34,7 +40,8 @@ impl EmailCommunicator {
             .build();
 
         Self {
-            mailer
+            mailer,
+            smtp_data: email_smtp,
         }
     }
 
@@ -57,11 +64,19 @@ impl EmailCommunicator {
             }
         }
     }
+
+    pub fn mailer(&self) -> &SmtpTransport {
+        &self.mailer
+    }
+    pub fn smtp_data(&self) -> &EmailSMTPData {
+        &self.smtp_data
+    }
 }
 
 impl EmailSMTPData {
-    pub fn new(smtp_server: String, username: String, password: String, port: Option<i64>) -> Self {
-        EmailSMTPData { smtp_server, username, password, port }
+    pub fn new(smtp_server: String, username: String, password: String, port: Option<i64>,
+               from_name: String, from_email: String) -> Self {
+        Self { smtp_server, username, password, port, from_name, from_email }
     }
 
     pub fn smtp_server(&self) -> &str {
@@ -76,18 +91,25 @@ impl EmailSMTPData {
     pub fn port(&self) -> Option<i64> {
         self.port
     }
+
+    pub fn from_name(&self) -> &str {
+        &self.from_name
+    }
+    pub fn from_email(&self) -> &str {
+        &self.from_email
+    }
 }
 
-impl CommunicationMethod for EmailCommunicator {
+impl<T> CommunicationMethod<T> for EmailCommunicator where T: Display {
     fn matches(&self, comm: &CommData) -> bool {
         return match comm { CommData::Email(_) => { true } };
     }
 
     fn send_report_to(&self, user: &User, comm_method: &UserCommunication, tracked_page: &TrackedPage,
-                      stored_dom: &StoredDom, latest_dom: &str) -> Result<String, String> {
+                      stored_dom: &StoredDom<T>, latest_dom: &T) -> Result<String, String> {
         return match comm_method.communication() {
             CommData::Email(email) => {
-                return self.send_mail_to("Nuno Neto <nunonuninho2@gmail.com>",
+                return self.send_mail_to(format!("{} <{}>", self.smtp_data().from_name(), self.smtp_data().from_email()).as_str(),
                                          format!("{} <{}>", user.user(), email).as_str(),
                                          format!("Defacement detected in tracked page {} with ID {}",
                                                  tracked_page.page_url(), tracked_page.page_id()).as_str(),

@@ -24,25 +24,25 @@ const TIME_BETWEEN_INDEX_CHECKS: u128 = 30 * TIME_BETWEEN_CHECKS;
 const TIME_INTERVAL: Duration = Duration::from_millis(1 * 1000);
 
 pub struct PageManager<T, V, K> where
-    T: WebsiteDefacementDB,
+    T: WebsiteDefacementDB<String>,
     V: UserDB,
-    K: Parser {
+    K: Parser<String> {
     //A set of all page_id that are currently being indexed
     currently_indexing: Mutex<BTreeSet<u32>>,
     tracked_page_db: T,
     user_db: V,
     parser: K,
-    comparators: Vec<Box<dyn Comparator>>,
-    communications: Vec<Box<dyn CommunicationMethod>>,
+    comparators: Vec<Box<dyn Comparator<String>>>,
+    communications: Vec<Box<dyn CommunicationMethod<String>>>,
 }
 
 impl<T, V, K> PageManager<T, V, K>
-    where T: WebsiteDefacementDB + 'static,
+    where T: WebsiteDefacementDB<String> + 'static,
           V: UserDB + 'static,
-          K: Parser + 'static {
+          K: Parser<String> + 'static {
     pub fn new(tracked_page_db: T, user_db: V, parser: K,
-               comparators: Vec<Box<dyn Comparator>>,
-               communications: Vec<Box<dyn CommunicationMethod>>) -> Self {
+               comparators: Vec<Box<dyn Comparator<String>>>,
+               communications: Vec<Box<dyn CommunicationMethod<String>>>) -> Self {
         Self {
             currently_indexing: Mutex::new(BTreeSet::new()),
             tracked_page_db,
@@ -259,7 +259,8 @@ impl<T, V, K> PageManager<T, V, K>
 
         println!("How regularly do you wish your page to be re indexed (Choose this depending on the amount of cumulative changes you think your page will have over that period of time)");
         println!("Please insert time in minutes");
-        println!("Press ENTER for DEFAULT ({} minutes)", Duration::from_millis(DEFAULT_INDEXING_INTERVAL).as_secs() / 60);
+        println!("Press ENTER for DEFAULT ({} minutes)",
+                 Duration::from_millis(DEFAULT_INDEXING_INTERVAL).as_secs() / 60);
 
         let read_time = stdin.read_line(&mut line);
 
@@ -470,7 +471,7 @@ impl<T, V, K> PageManager<T, V, K>
                             for contact in &contacts {
                                 for comm_method in &self.communications {
                                     match (*comm_method).send_report_to(&user, contact, &page,
-                                                                        latest_dom, current_dom.as_str()) {
+                                                                        latest_dom, &current_dom) {
                                         Ok(_) => {
                                             debug!("Sent notification to user {} with ID {} about defacement on page {} with id {}",
                                                      user.user(), user.user_id(), page.page_url(),
@@ -513,10 +514,10 @@ impl<T, V, K> PageManager<T, V, K>
     ///Verifies if the page is as it's supposed to be.
     ///Returns true if the page is good (not defaced)
     ///Returns false if the page is not good (defaced)
-    fn verify_page(&self, page: &TrackedPage, stored_dom: &StoredDom, current_dom: &String) -> bool {
+    fn verify_page(&self, page: &TrackedPage, stored_dom: &StoredDom<String>, current_dom: &String) -> bool {
         for comparator in &self.comparators {
             let result = comparator.compare_between(page, stored_dom.dom(),
-                                                    current_dom.as_str());
+                                                    &current_dom);
 
             match result {
                 CompareResult::NotDefaced => {
@@ -566,7 +567,7 @@ impl<T, V, K> PageManager<T, V, K>
 
                 match dom_res {
                     Ok(dom) => {
-                        self.tracked_page_db().insert_dom_for_page(&page, dom.as_str()).unwrap();
+                        self.tracked_page_db().insert_dom_for_page(&page, dom).unwrap();
                         debug!("Inserted DOM for page {} with ID {}", page.page_url(), page.page_id());
                     }
                     Err(e) => {
@@ -583,7 +584,7 @@ impl<T, V, K> PageManager<T, V, K>
 
                 match dom_res {
                     Ok(dom) => {
-                        self.tracked_page_db().insert_dom_for_page(&page, dom.as_str()).unwrap();
+                        self.tracked_page_db().insert_dom_for_page(&page, dom).unwrap();
                         debug!("Inserted DOM for page {} with ID {}", page.page_url(), page.page_id());
                     }
                     Err(e) => {

@@ -31,10 +31,10 @@ pub enum TrackedPageType {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub struct StoredDom {
+pub struct StoredDom<T> {
     dom_id: u32,
     owning_page_id: u32,
-    dom: String,
+    dom: T,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -43,7 +43,8 @@ pub struct User {
     user: String,
 }
 
-pub trait WebsiteDefacementDB: Send + Sync {
+/// T is the dom type
+pub trait WebsiteDefacementDB<T>: Send + Sync {
     fn insert_tracked_page(&self, page: &str, user_id: u32) -> Result<TrackedPage, String>;
 
     fn list_all_tracked_pages(&self) -> Result<Vec<TrackedPage>, String>;
@@ -68,15 +69,15 @@ pub trait WebsiteDefacementDB: Send + Sync {
 
     fn del_tracked_page(&self, page: TrackedPage) -> Result<bool, String>;
 
-    fn read_doms_for_page(&self, page: &TrackedPage) -> Result<Vec<StoredDom>, String>;
+    fn read_doms_for_page(&self, page: &TrackedPage) -> Result<Vec<StoredDom<T>>, String>;
 
-    fn read_latest_dom_for_page(&self, page: &TrackedPage) -> Result<StoredDom, String>;
+    fn read_latest_dom_for_page(&self, page: &TrackedPage) -> Result<StoredDom<T>, String>;
 
-    fn insert_dom_for_page(&self, page: &TrackedPage, page_dom: &str) -> Result<StoredDom, String>;
+    fn insert_dom_for_page(&self, page: &TrackedPage, page_dom: T) -> Result<StoredDom<T>, String>;
 
-    fn update_dom_for_page(&self, page: &TrackedPage, dom: &mut StoredDom, page_dom: &str) -> Result<(), String>;
+    fn update_dom_for_page(&self, page: &TrackedPage, dom: &mut StoredDom<T>, page_dom: T) -> Result<(), String>;
 
-    fn delete_dom_for_page(&self, page: &TrackedPage, dom: StoredDom) -> Result<bool, String>;
+    fn delete_dom_for_page(&self, page: &TrackedPage, dom: StoredDom<T>) -> Result<bool, String>;
 }
 
 pub trait UserDB: Send + Sync {
@@ -158,8 +159,8 @@ impl TrackedPage {
     }
 }
 
-impl StoredDom {
-    pub fn new(dom_id: u32, owning_page_id: u32, dom: String) -> Self {
+impl<T> StoredDom<T> {
+    pub fn new(dom_id: u32, owning_page_id: u32, dom: T) -> Self {
         Self { dom_id, owning_page_id, dom }
     }
 
@@ -169,11 +170,11 @@ impl StoredDom {
     pub fn owning_page_id(&self) -> u32 {
         self.owning_page_id
     }
-    pub fn dom(&self) -> &str {
+    pub fn dom(&self) -> &T {
         &self.dom
     }
 
-    pub fn set_dom(&mut self, dom: String) {
+    pub fn set_dom(&mut self, dom: T) {
         self.dom = dom;
     }
 }

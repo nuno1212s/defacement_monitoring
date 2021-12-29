@@ -12,7 +12,7 @@ const ANALYSE_TIME_INTERVAL: Duration = Duration::from_millis(1 * 1000);
 const DYNAMIC_CHECK_COUNT: u32 = 2 * 5;
 
 pub async fn analyse_dynamic_page<T>(parser: &T, page: &TrackedPage) -> Result<f64, String>
-    where T: Parser {
+    where T: Parser<String> {
     let mut time_period = time::interval(ANALYSE_TIME_INTERVAL);
 
     let mut checks = 0;
@@ -85,12 +85,12 @@ impl DiffComparator {
     }
 }
 
-impl Comparator for DiffComparator {
+impl Comparator<String> for DiffComparator {
     fn name(&self) -> &str {
         "Diff"
     }
 
-    fn compare_between(&self, page: &TrackedPage, dom_1: &str, dom_2: &str) -> CompareResult {
+    fn compare_between(&self, page: &TrackedPage, dom_1: &String, dom_2: &String) -> CompareResult {
         return match page.tracked_page_type() {
             TrackedPageType::Static => {
                 if compare_dom_with_diff(dom_1, dom_2) > 0.0 {

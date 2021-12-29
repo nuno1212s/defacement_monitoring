@@ -9,11 +9,11 @@ pub mod diff_comparator;
 /// These comparators must take into account the type of page that it is and then
 /// use that information to return if the page has been defaced or not.
 ///
-pub trait Comparator : Send + Sync {
+pub trait Comparator<T> : Send + Sync {
 
     fn name(&self) -> &str;
 
-    fn compare_between(&self, page: &TrackedPage, dom_1: &str, dom_2: &str) -> CompareResult;
+    fn compare_between(&self, page: &TrackedPage, dom_1: &T, dom_2: &T) -> CompareResult;
 
 }
 

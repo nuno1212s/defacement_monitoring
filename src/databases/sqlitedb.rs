@@ -2,13 +2,14 @@ extern crate r2d2;
 extern crate r2d2_sqlite;
 extern crate rusqlite;
 
-use std::fmt::format;
+use std::fmt::{Display, format};
 use std::string::ToString;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Error, params, Row, Rows};
+use rusqlite::{Error, params, Row, Rows, ToSql};
+use rusqlite::types::FromSql;
 
 use crate::communication::CommData::Email;
 use crate::databases::*;
@@ -24,18 +25,20 @@ const PAGE_STORAGE: &str = "pages_db";
 By using a connection pool we are able to use multiple threads effectively
  */
 #[derive(Clone)]
-pub struct SQLLiteDefacementDB {
+pub struct SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql {
     sql_conn: Pool<SqliteConnectionManager>,
+    _phantom: Option<T>
 }
 
-impl SQLLiteDefacementDB {
+impl<T> SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql {
     pub(crate) fn new() -> Self {
         let manager = SqliteConnectionManager::file(PAGE_STORAGE);
 
         let pool = r2d2::Pool::new(manager).unwrap();
 
         let result = Self {
-            sql_conn: pool
+            sql_conn: pool,
+            _phantom: None
         };
 
         result.create_tables();
@@ -82,7 +85,7 @@ impl SQLLiteDefacementDB {
                                    USER_CONTACTS).as_str(), params![]).unwrap();
     }
 
-    fn read_doms_for_page_id(&self, page_id: u32) -> Result<Vec<StoredDom>, String> {
+    fn read_doms_for_page_id(&self, page_id: u32) -> Result<Vec<StoredDom<T>>, String> {
         let read_guard = self.get_sql_conn();
 
         let mut statement = read_guard.prepare(
@@ -245,7 +248,7 @@ impl SQLLiteDefacementDB {
     }
 }
 
-impl WebsiteDefacementDB for SQLLiteDefacementDB {
+impl<T> WebsiteDefacementDB<T> for SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql + Send + Sync {
     fn insert_tracked_page(&self, page: &str, user_id: u32) -> Result<TrackedPage, String> {
         let write_guard = self.write_sql_conn();
 
@@ -452,11 +455,11 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
     }
 
 
-    fn read_doms_for_page(&self, page: &TrackedPage) -> Result<Vec<StoredDom>, String> {
+    fn read_doms_for_page(&self, page: &TrackedPage) -> Result<Vec<StoredDom<T>>, String> {
         self.read_doms_for_page_id(page.page_id())
     }
 
-    fn read_latest_dom_for_page(&self, page: &TrackedPage) -> Result<StoredDom, String> {
+    fn read_latest_dom_for_page(&self, page: &TrackedPage) -> Result<StoredDom<T>, String> {
         let conn = self.get_sql_conn();
 
         let mut statement = conn.prepare(format!("SELECT * FROM {} WHERE PAGE_ID=? ORDER BY rowid DESC LIMIT 1", TRACKED_PAGES_DOMS).as_str()).unwrap();
@@ -480,7 +483,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         };
     }
 
-    fn insert_dom_for_page(&self, page: &TrackedPage, page_dom: &str) -> Result<StoredDom, String> {
+    fn insert_dom_for_page(&self, page: &TrackedPage, page_dom: T) -> Result<StoredDom<T>, String> {
         let write_guard = self.write_sql_conn();
 
         let mut update = write_guard
@@ -490,7 +493,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
             Ok(count) => {
                 if count > 0 {
                     Ok(StoredDom::new(write_guard.last_insert_rowid() as u32,
-                                      page.page_id(), String::from(page_dom)))
+                                      page.page_id(), page_dom))
                 } else {
                     Err(String::from("Failed to insert into the DB"))
                 }
@@ -501,7 +504,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         };
     }
 
-    fn update_dom_for_page(&self, _page: &TrackedPage, dom: &mut StoredDom, page_dom: &str) -> Result<(), String> {
+    fn update_dom_for_page(&self, _page: &TrackedPage, dom: &mut StoredDom<T>, page_dom:T) -> Result<(), String> {
         let guard = self.get_sql_conn();
 
         let mut update = guard
@@ -510,7 +513,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
 
         match update.execute(params![page_dom, dom.dom_id()]) {
             Ok(_) => {
-                dom.set_dom(String::from(page_dom));
+                dom.set_dom(page_dom);
 
                 Ok(())
             }
@@ -520,7 +523,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         }
     }
 
-    fn delete_dom_for_page(&self, _page: &TrackedPage, dom: StoredDom) -> Result<bool, String> {
+    fn delete_dom_for_page(&self, _page: &TrackedPage, dom: StoredDom<T>) -> Result<bool, String> {
         let read_guard = self.get_sql_conn();
 
         let mut execute = read_guard.prepare(
@@ -535,7 +538,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
     }
 }
 
-impl UserDB for SQLLiteDefacementDB {
+impl<T> UserDB for SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql + Send + Sync {
     fn create_user(&self, user_name: &str) -> Result<User, String> {
         let connection = self.get_sql_conn();
         let statement = connection.execute(format!("INSERT INTO {}(USERNAME) values(LOWER(?))", USERS).as_str(),

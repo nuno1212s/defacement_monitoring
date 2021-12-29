@@ -36,14 +36,14 @@ async fn main() {
     let parser = ChromiumParser::new();
 
     debug!("Init comparators");
-    let comparators: Vec<Box<dyn Comparator>> = vec![Box::new(ChecksumComparator::new()),
+    let comparators: Vec<Box<dyn Comparator<String>>> = vec![Box::new(ChecksumComparator::new()),
                                                      Box::new(DiffComparator::new())];
 
     debug!("Init email communication");
 
     let config_file = include_str!("../resources/email.toml");
 
-    let communicators: Vec<Box<dyn CommunicationMethod>> = vec![Box::new(EmailCommunicator::new(config_file))];
+    let communicators: Vec<Box<dyn CommunicationMethod<String>>> = vec![Box::new(EmailCommunicator::new(config_file))];
 
     debug!("Initializing program....");
 
