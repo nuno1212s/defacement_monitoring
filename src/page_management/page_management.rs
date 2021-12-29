@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io::{BufRead, StdinLock};
 use std::num::ParseIntError;
 use std::sync::{Arc, Mutex};
@@ -9,7 +10,7 @@ use tokio::time;
 use crate::communication::{CommData, CommunicationMethod, UserCommunication};
 use crate::comparators::{Comparator, CompareResult};
 use crate::comparators::diff_comparator::{analyse_dynamic_page, compare_dom_with_diff};
-use crate::databases::{StoredDom, TrackedPage, TrackedPageType, User, UserDB, WebsiteDefacementDB};
+use crate::databases::{DEFAULT_INDEXING_INTERVAL, StoredDom, TrackedPage, TrackedPageType, User, UserDB, WebsiteDefacementDB};
 use crate::databases::TrackedPageType::Dynamic;
 use crate::DiffComparator;
 use crate::parsers::Parser;
@@ -18,6 +19,7 @@ use crate::parsers::Parser;
 60 minutes between checks
  */
 const TIME_BETWEEN_CHECKS: u128 = 1 * 1 * 1000;
+const TIME_BETWEEN_INDEX_CHECKS: u128 = 30 * TIME_BETWEEN_CHECKS;
 ///60 seconds between attempting checks
 const TIME_INTERVAL: Duration = Duration::from_millis(1 * 1000);
 
@@ -25,7 +27,8 @@ pub struct PageManager<T, V, K> where
     T: WebsiteDefacementDB,
     V: UserDB,
     K: Parser {
-    currently_analysing_pages: Mutex<Vec<TrackedPage>>,
+    //A set of all page_id that are currently being indexed
+    currently_indexing: Mutex<BTreeSet<u32>>,
     tracked_page_db: T,
     user_db: V,
     parser: K,
@@ -41,7 +44,7 @@ impl<T, V, K> PageManager<T, V, K>
                comparators: Vec<Box<dyn Comparator>>,
                communications: Vec<Box<dyn CommunicationMethod>>) -> Self {
         Self {
-            currently_analysing_pages: Mutex::new(Vec::new()),
+            currently_indexing: Mutex::new(BTreeSet::new()),
             tracked_page_db,
             user_db,
             parser,
@@ -134,7 +137,7 @@ impl<T, V, K> PageManager<T, V, K>
                 5 => {
                     match self.read_page_from_stdin(&mut stdin) {
                         Ok(mut page) => {
-                            tokio::spawn(self.clone().analyse_page(page));
+                            tokio::task::spawn(self.clone().analyse_page(page));
                         }
                         Err(e) => { println!("FAILED {}", e); }
                     }
@@ -254,7 +257,25 @@ impl<T, V, K> PageManager<T, V, K>
             }
         }
 
-        tokio::spawn(self.clone().analyse_page(tracked_page));
+        println!("How regularly do you wish your page to be re indexed (Choose this depending on the amount of cumulative changes you think your page will have over that period of time)");
+        println!("Please insert time in minutes");
+        println!("Press ENTER for DEFAULT ({} minutes)", Duration::from_millis(DEFAULT_INDEXING_INTERVAL).as_secs() / 60);
+
+        let read_time = stdin.read_line(&mut line);
+
+        line.pop();
+
+        let mut time_in_millis: u128;
+
+        if line.is_empty() {
+            time_in_millis = DEFAULT_INDEXING_INTERVAL as u128
+        } else {
+            time_in_millis = Duration::from_secs((line.parse::<u32>().unwrap() * 60) as u64).as_millis();
+        }
+
+        tracked_page.set_index_interval(time_in_millis);
+
+        tokio::task::spawn(self.clone().analyse_page(tracked_page));
     }
 
     fn display_all_tracked_pages(&self) {
@@ -322,34 +343,65 @@ impl<T, V, K> PageManager<T, V, K>
         }
     }
 
-    ///Check which pages need haven't been checked in a while and checks them
+    ///Fetch which pages need haven't been checked in a while and checks them
     fn check_pages(self: &Arc<Self>) {
-        let result = self.tracked_page_db()
-            .list_all_pages_not_checked_for(TIME_BETWEEN_CHECKS);
+        {
+            let result = self.tracked_page_db()
+                .list_all_pages_not_indexed_for();
 
-        match result {
-            Ok(mut pages_not_checked) => {
-                let mut lock_guard = self.currently_analysing_pages.lock().unwrap();
+            match result {
+                Ok(pages_not_indexed) => {
+                    for page_to_index in pages_not_indexed {
+                        if page_to_index.defacement_count() > 0 {
+                            ///We don't want to automatically reindex a page that has an even
+                            /// tiny chance of currently being defaced, as that would mean we would
+                            /// not be able to detect it at all
+                            ///This reindexing has to be done by hand when the changes
+                            ///Are sufficient to trigger a defacement warning
+                            continue;
+                        }
 
-                for page in pages_not_checked {
-                    let page_clone = page.clone();
+                        let self_cpy = self.clone();
 
-                    let self_res = self.clone();
-
-                    lock_guard.push(page);
-
-                    tokio::spawn(self_res.check_singular_page(page_clone));
+                        tokio::task::spawn_blocking(move || { self_cpy.analyse_page(page_to_index) });
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to check pages because of error: {}", e)
                 }
             }
-            Err(e) => {
-                error!("Failed to check pages because of error: {}", e)
+        }
+        {
+            let result = self.tracked_page_db()
+                .list_all_pages_not_checked_for(TIME_BETWEEN_CHECKS);
+
+            match result {
+                Ok(mut pages_not_checked) => {
+                    for page in pages_not_checked {
+                        let self_res = self.clone();
+
+                        tokio::task::spawn_blocking(move || { self_res.check_singular_page(page) });
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to check pages because of error: {}", e)
+                }
             }
         }
     }
 
     ///Analyse a given page and check if it has been defaced
     ///Runs all the comparison algorithms provided in PageManager initialization
-    async fn check_singular_page(self: Arc<Self>, mut page: TrackedPage) {
+    fn check_singular_page(self: Arc<Self>, mut page: TrackedPage) {
+        {
+            let currently_index = self.currently_indexing.lock().unwrap();
+
+            if currently_index.contains(&page.page_id()) {
+                //We do not want to check the page if it is currently being indexed.
+                return;
+            }
+        }
+
         let result_doms = self.tracked_page_db()
             .read_doms_for_page(&page);
 
@@ -366,7 +418,7 @@ impl<T, V, K> PageManager<T, V, K>
         //Allow the scheduler to take over a different task
         //while we are reading the dom from the parser, which might take a while
         //As it has to fetch the result
-        let dom_result = self.read_current_page_for(&page).await;
+        let dom_result = self.read_current_page_for(&page);
 
         let current_dom = dom_result.expect("Failed to read current dom.");
 
@@ -494,9 +546,23 @@ impl<T, V, K> PageManager<T, V, K>
     async fn analyse_page(self: Arc<Self>, mut page: TrackedPage) {
         debug!("Analysing page {} with ID {}", page.page_url(), page.page_id());
 
+        //We insert this scope here as the compiler is still not capable of detecting a drop(),
+        //So when we do the await further up ahead, which gives the tokio runtime permission
+        //To put this task to sleep, the mutex guard isn't part of the data that needs to be
+        //Stored (Mutex guards are not Send)
+        {
+            let mut currently_indexing = self.currently_indexing.lock().unwrap();
+
+            if currently_indexing.contains(&page.page_id()) {
+                return;
+            }
+
+            currently_indexing.insert(page.page_id());
+        }
+
         match page.tracked_page_type() {
             TrackedPageType::Static => {
-                let dom_res = self.read_current_page_for(&page).await;
+                let dom_res = self.read_current_page_for(&page);
 
                 match dom_res {
                     Ok(dom) => {
@@ -513,7 +579,7 @@ impl<T, V, K> PageManager<T, V, K>
 
                 page.set_tracked_page_type(Dynamic(result.unwrap()));
 
-                let dom_res = self.read_current_page_for(&page).await;
+                let dom_res = self.read_current_page_for(&page);
 
                 match dom_res {
                     Ok(dom) => {
@@ -528,9 +594,15 @@ impl<T, V, K> PageManager<T, V, K>
         }
 
         self.tracked_page_db().update_tracking_type_for_page(&page).unwrap();
+
+        {
+            let mut currently_indexing = self.currently_indexing.lock().unwrap();
+
+            currently_indexing.remove(&page.page_id());
+        }
     }
 
-    async fn read_current_page_for(&self, page: &TrackedPage) -> Result<String, String> {
+    fn read_current_page_for(&self, page: &TrackedPage) -> Result<String, String> {
         self.parser().parse_page(page)
     }
 

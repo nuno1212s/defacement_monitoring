@@ -1,8 +1,11 @@
+use std::cmp::Ordering;
+use std::time::Duration;
 use crate::communication::{CommData, UserCommunication};
 
 pub mod sqlitedb;
 
-const DEFAULT_DEFACEMENT_THRESHOLD : u32 = 5;
+const DEFAULT_DEFACEMENT_THRESHOLD: u32 = 5;
+pub const DEFAULT_INDEXING_INTERVAL: u64 = Duration::from_secs(60 * 30).as_millis() as u64;
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TrackedPage {
@@ -11,6 +14,7 @@ pub struct TrackedPage {
     owning_user_id: u32,
     last_time_checked: u128,
     last_time_indexed: u128,
+    index_interval: u128,
     tracked_page_type: TrackedPageType,
     defacement_count: u32,
     defacement_threshold: u32,
@@ -46,7 +50,7 @@ pub trait WebsiteDefacementDB: Send + Sync {
 
     fn list_all_pages_not_checked_for(&self, time_since_last_check: u128) -> Result<Vec<TrackedPage>, String>;
 
-    fn list_all_pages_not_indexed_for(&self, time_since_last_index: u128) -> Result<Vec<TrackedPage>, String>;
+    fn list_all_pages_not_indexed_for(&self) -> Result<Vec<TrackedPage>, String>;
 
     fn get_information_for_page(&self, page: &str) -> Result<TrackedPage, String>;
 
@@ -95,7 +99,7 @@ pub trait UserDB: Send + Sync {
 
 impl TrackedPage {
     pub fn new(page_id: u32, page_url: String, owning_user_id: u32, last_time_checked: u128,
-               last_time_indexed: u128, defacement_count: u32, defacement_threshold: u32,
+               last_time_indexed: u128, index_interval: u128, defacement_count: u32, defacement_threshold: u32,
                notified_of_current: bool,
                tracked_type: TrackedPageType) -> Self {
         Self {
@@ -104,6 +108,7 @@ impl TrackedPage {
             owning_user_id,
             last_time_checked,
             last_time_indexed,
+            index_interval,
             defacement_count,
             defacement_threshold,
             notified_of_current_breach: notified_of_current,
@@ -135,7 +140,6 @@ impl TrackedPage {
     pub fn defacement_count(&self) -> u32 {
         self.defacement_count
     }
-
     pub fn defacement_threshold(&self) -> u32 {
         self.defacement_threshold
     }
@@ -145,9 +149,12 @@ impl TrackedPage {
     pub fn set_defacement_count(&mut self, defacement_count: u32) {
         self.defacement_count = defacement_count;
     }
-
     pub fn set_notified_of_current_breach(&mut self, notified_of_current_breach: bool) {
         self.notified_of_current_breach = notified_of_current_breach;
+    }
+    pub fn index_interval(&self) -> u128 { self.index_interval }
+    pub fn set_index_interval(&mut self, index_interval: u128) {
+        self.index_interval = index_interval;
     }
 }
 

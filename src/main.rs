@@ -25,6 +25,7 @@ pub mod databases;
 
 #[tokio::main]
 async fn main() {
+
     env_logger::init();
     debug!("Initializing DB");
 

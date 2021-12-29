@@ -56,7 +56,7 @@ impl SQLLiteDefacementDB {
 
         connection.execute(format!("CREATE TABLE IF NOT EXISTS {} (rowid INTEGER PRIMARY KEY, \
         PAGE_URL varchar(2048) NOT NULL, USER_ID INTEGER NOT NULL, LAST_TIME_CHECKED INTEGER,\
-        LAST_TIME_INDEXED INTEGER,DEFACEMENT_COUNT INTEGER DEFAULT 0, DEFACEMENT_THRESHOLD INTEGER NOT NULL, \
+        LAST_TIME_INDEXED INTEGER, INDEX_INTERVAL INTEGER,DEFACEMENT_COUNT INTEGER DEFAULT 0, DEFACEMENT_THRESHOLD INTEGER NOT NULL, \
          NOTIFIED_OF_CURRENT INTEGER DEFAULT 0, PAGE_TYPE varchar(25) NOT NULL, PAGE_TRACKING_DATA TEXT)",
                                    TRACKED_PAGES_TABLE).as_str(), []).unwrap();
 
@@ -145,16 +145,17 @@ impl SQLLiteDefacementDB {
         let owning_user_id: u32 = row.get(2)?;
         let last_time_checked: u64 = row.get(3)?;
         let last_time_indexed: u64 = row.get(4)?;
-        let defacement_count: u32 = row.get(5)?;
-        let defacement_threshold: u32 = row.get(6)?;
-        let notified_current: u32 = row.get(7)?;
+        let index_interval: u64 = row.get(5)?;
+        let defacement_count: u32 = row.get(6)?;
+        let defacement_threshold: u32 = row.get(7)?;
+        let notified_current: u32 = row.get(8)?;
 
         let mut tracked_page_type = TrackedPageType::Static;
 
-        let tracked_type: String = row.get(8)?;
+        let tracked_type: String = row.get(9)?;
 
         if tracked_type.eq_ignore_ascii_case("Dynamic") {
-            let diff_str: String = row.get(9)?;
+            let diff_str: String = row.get(10)?;
 
             let diff: f64 = diff_str.parse::<f64>().unwrap();
 
@@ -162,8 +163,9 @@ impl SQLLiteDefacementDB {
         }
 
         Ok(TrackedPage::new(page_id, page_url, owning_user_id, last_time_checked as u128,
-                            last_time_indexed as u128, defacement_count, defacement_threshold,
-                            notified_current != 0, tracked_page_type))
+                            last_time_indexed as u128, index_interval as u128,
+                            defacement_count, defacement_threshold, notified_current != 0,
+                            tracked_page_type))
     }
 
     fn crawl_all_pages_in_result_set(&self, rows: &mut Rows) -> Result<Vec<TrackedPage>, Error> {
@@ -178,21 +180,33 @@ impl SQLLiteDefacementDB {
         Ok(return_vec)
     }
 
-    fn list_all_pages_not_actioned_for(&self, time_since_last_check: u128, check_col: &str) -> Result<Vec<TrackedPage>, String> {
+    fn list_all_pages_not_actioned_for(&self, time_since_last_check: Option<u128>, check_interval_col: Option<&str>, check_col: &str) -> Result<Vec<TrackedPage>, String> {
         let read_guard = self.get_sql_conn();
 
         let current_time = SystemTime::now().duration_since(UNIX_EPOCH)
             .unwrap().as_millis();
+
+        let mut final_str;
+
+        match time_since_last_check {
+            None => {
+                final_str = format!("UPDATE {} SET {}=? WHERE {}<(?-{})", TRACKED_PAGES_TABLE,
+                                    check_col, check_col, check_interval_col.unwrap());
+            }
+            Some(time_interval) => {
+                final_str = format!("UPDATE {} SET {}=? WHERE {}<(?-{})", TRACKED_PAGES_TABLE,
+                                    check_col, check_col, time_interval);
+            }
+        }
 
         /// This is basically a poor man's lock on SQLite without actually locking anything
         /// By performing this update, we are basically saying that we will take responsibility of checking these pages
         /// Because the time set is correspondent to our time and the odds of another thread attempting to
         /// do this at the EXACT same time as us is basically 0, so we get a form of locking
         /// to assure each page only gets verified once every time_since_last_check to improve performance
-        let mut update_query = read_guard.prepare(format!("UPDATE {} SET {}=? WHERE {}<?", TRACKED_PAGES_TABLE,
-                                                          check_col, check_col).as_str()).unwrap();
+        let mut update_query = read_guard.prepare(final_str.as_str()).unwrap();
 
-        match update_query.execute(params![current_time as u64, (current_time - time_since_last_check) as u64]) {
+        match update_query.execute(params![current_time as u64, current_time as u64]) {
             Ok(_) => {}
             Err(e) => {
                 return Err(e.to_string());
@@ -236,18 +250,19 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         let write_guard = self.write_sql_conn();
 
         let mut statement = write_guard.prepare(
-            format!("INSERT INTO {}(PAGE_URL, USER_ID, LAST_TIME_CHECKED, LAST_TIME_INDEXED, DEFACEMENT_THRESHOLD, PAGE_TYPE) values(?, ?, ?, ?, ?, ?)", TRACKED_PAGES_TABLE).as_str()).unwrap();
+            format!("INSERT INTO {}(PAGE_URL, USER_ID, LAST_TIME_CHECKED, LAST_TIME_INDEXED, INDEX_INTERVAL, DEFACEMENT_THRESHOLD, PAGE_TYPE) values(?, ?, ?, ?,?, ?, ?)", TRACKED_PAGES_TABLE).as_str()).unwrap();
 
         let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         match statement.execute(params![page, user_id, current_time as u64,
-            0, DEFAULT_DEFACEMENT_THRESHOLD, "Static"]) {
+            0,DEFAULT_INDEXING_INTERVAL, DEFAULT_DEFACEMENT_THRESHOLD, "Static"]) {
             Ok(state) => {
                 if state > 0 {
                     let i = write_guard.last_insert_rowid();
 
                     Ok(TrackedPage::new(i as u32, String::from(page), user_id,
-                                        current_time, 0, 0,
+                                        current_time, 0,
+                                        DEFAULT_INDEXING_INTERVAL as u128, 0,
                                         DEFAULT_DEFACEMENT_THRESHOLD, false,
                                         TrackedPageType::Static))
                 } else {
@@ -277,11 +292,11 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
     }
 
     fn list_all_pages_not_checked_for(&self, time_since_last_check: u128) -> Result<Vec<TrackedPage>, String> {
-        self.list_all_pages_not_actioned_for(time_since_last_check, "LAST_TIME_CHECKED")
+        self.list_all_pages_not_actioned_for(Option::Some(time_since_last_check), None, "LAST_TIME_CHECKED")
     }
 
-    fn list_all_pages_not_indexed_for(&self, time_since_last_index: u128) -> Result<Vec<TrackedPage>, String> {
-        self.list_all_pages_not_actioned_for(time_since_last_index, "LAST_TIME_INDEXED")
+    fn list_all_pages_not_indexed_for(&self) -> Result<Vec<TrackedPage>, String> {
+        self.list_all_pages_not_actioned_for(None, Some("INDEX_INTERVAL"), "LAST_TIME_INDEXED")
     }
 
     fn get_information_for_page(&self, page: &str) -> Result<TrackedPage, String> {
@@ -332,7 +347,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         let connection = self.get_sql_conn();
 
         let mut statement = connection.prepare(format!("UPDATE {} SET PAGE_TYPE=?,\
-         PAGE_TRACKING_DATA=?,LAST_TIME_INDEXED=? WHERE rowid=?", TRACKED_PAGES_TABLE).as_str()).unwrap();
+         PAGE_TRACKING_DATA=?,LAST_TIME_INDEXED=?,INDEX_INTERVAL=? WHERE rowid=?", TRACKED_PAGES_TABLE).as_str()).unwrap();
 
         let mut page_type_data = String::from("NULL");
 
@@ -346,7 +361,7 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
         let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
 
         return match statement.execute(params![tracked_page_type_to_str(page.tracked_page_type()),
-        page_type_data,current_time as u64, page.page_id()]) {
+        page_type_data,current_time as u64, page.index_interval() as u64, page.page_id()]) {
             Ok(changed) => {
                 if changed > 0 {
                     Ok(true)
@@ -414,7 +429,6 @@ impl WebsiteDefacementDB for SQLLiteDefacementDB {
                 Err(err.to_string())
             }
         };
-
     }
 
     fn del_tracked_page(&self, page: TrackedPage) -> Result<bool, String> {
