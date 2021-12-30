@@ -248,7 +248,7 @@ impl<T> SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql {
     }
 }
 
-impl<T> WebsiteDefacementDB<T> for SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql + Send + Sync {
+impl<T> WebsiteDefacementDB<T> for SQLLiteDefacementDB<T> where T: Display + Debug + FromSql + ToSql + Send + Sync {
     fn insert_tracked_page(&self, page: &str, user_id: u32) -> Result<TrackedPage, String> {
         let write_guard = self.write_sql_conn();
 

@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::fmt::{Debug, Display};
 use std::time::Duration;
 use crate::communication::{CommData, UserCommunication};
 
@@ -44,13 +45,23 @@ pub struct User {
 }
 
 /// T is the dom type
-pub trait WebsiteDefacementDB<T>: Send + Sync {
+pub trait WebsiteDefacementDB<T>: Send + Sync where T: Display + Debug + Send + Sync {
     fn insert_tracked_page(&self, page: &str, user_id: u32) -> Result<TrackedPage, String>;
 
     fn list_all_tracked_pages(&self) -> Result<Vec<TrackedPage>, String>;
 
+    /// When this method is executed, the database should assume that this client
+    /// Will be responsible for checking these pages and the last check time
+    /// should be set to the current time accordingly to avoid another possible
+    /// instance of this program also checking the same pages at the same time,
+    /// causing a race condition and wasted resources
     fn list_all_pages_not_checked_for(&self, time_since_last_check: u128) -> Result<Vec<TrackedPage>, String>;
 
+    /// When this method is executed, the database should assume that this client
+    /// Will be responsible for indexing these pages and the last check time
+    /// should be set to the current time accordingly to avoid another possible
+    /// instance of this program also indexing the same pages at the same time,
+    /// causing a race condition and wasted resources
     fn list_all_pages_not_indexed_for(&self) -> Result<Vec<TrackedPage>, String>;
 
     fn get_information_for_page(&self, page: &str) -> Result<TrackedPage, String>;
