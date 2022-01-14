@@ -27,7 +27,7 @@ By using a connection pool we are able to use multiple threads effectively
 #[derive(Clone)]
 pub struct SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql {
     sql_conn: Pool<SqliteConnectionManager>,
-    _phantom: Option<T>
+    _phantom: Option<T>,
 }
 
 impl<T> SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql {
@@ -38,7 +38,7 @@ impl<T> SQLLiteDefacementDB<T> where T: Display + FromSql + ToSql {
 
         let result = Self {
             sql_conn: pool,
-            _phantom: None
+            _phantom: None,
         };
 
         result.create_tables();
@@ -504,7 +504,7 @@ impl<T> WebsiteDefacementDB<T> for SQLLiteDefacementDB<T> where T: Display + Deb
         };
     }
 
-    fn update_dom_for_page(&self, _page: &TrackedPage, dom: &mut StoredDom<T>, page_dom:T) -> Result<(), String> {
+    fn update_dom_for_page(&self, _page: &TrackedPage, dom: &mut StoredDom<T>, page_dom: T) -> Result<(), String> {
         let guard = self.get_sql_conn();
 
         let mut update = guard
@@ -717,7 +717,7 @@ mod sqlite_tests {
 
     #[test]
     fn test_sqlite_tracked_page() {
-        let db = SQLLiteDefacementDB::new();
+        let db: SQLLiteDefacementDB<String> = SQLLiteDefacementDB::new();
 
         let page = "https://google.com";
 
@@ -742,7 +742,7 @@ mod sqlite_tests {
 
     #[test]
     fn test_sqlite_store_dom() {
-        let db = SQLLiteDefacementDB::new();
+        let db: SQLLiteDefacementDB<String> = SQLLiteDefacementDB::new();
 
         let page = "https://google.com";
 
@@ -754,7 +754,7 @@ mod sqlite_tests {
 
         let tracked_page = result.unwrap();
 
-        let result_insert_dom = db.insert_dom_for_page(&tracked_page, dom);
+        let result_insert_dom = db.insert_dom_for_page(&tracked_page, String::from(dom));
 
         assert!(result_insert_dom.is_ok());
 
@@ -779,7 +779,7 @@ mod sqlite_tests {
 
     #[test]
     fn test_user_db() {
-        let db = SQLLiteDefacementDB::new();
+        let db: SQLLiteDefacementDB<String> = SQLLiteDefacementDB::new();
 
         let username = "teste";
 
